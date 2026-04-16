@@ -6,19 +6,22 @@ import Footer from "@/components/Footer";
 import { ArrowLeft, Camera, Brain, Gamepad2, Users } from "lucide-react";
 import { Link } from "react-router-dom";
 
+import robotVsss from '@/assets/robotVsss.png';
+
 const VSSS = () => {
   return (
     <div className="min-h-screen bg-background">
       <Header />
       
-      {/* Hero Section */}
       <section className="pt-20 pb-16 bg-gradient-to-b from-background to-muted/20">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-4xl mx-auto text-center">
+              {/* 
             <Link to="/" className="inline-flex items-center text-muted-foreground hover:text-foreground mb-6 transition-colors">
               <ArrowLeft className="h-4 w-4 mr-2" />
               Voltar ao início
             </Link>
+            */}
             
             <Badge className="mb-4 bg-gradient-to-r from-titans-orange to-titans-gold text-titans-dark">
               Modalidade
@@ -35,12 +38,18 @@ const VSSS = () => {
             </p>
             
             <div className="flex flex-wrap justify-center gap-4">
-              <Button variant="titans" size="lg">
-                Ver Partidas
+
+            {/* 
+           <div className="flex flex-wrap justify-center gap-4">
+              <Button variant="hero" size="lg">
+                Ver Competições
               </Button>
               <Button variant="outline" size="lg">
-                Sistema de Visão
+                Especificações Técnicas
               </Button>
+            </div>
+            */}
+
             </div>
           </div>
         </div>
@@ -76,8 +85,17 @@ const VSSS = () => {
             
             <div className="bg-gradient-to-br from-titans-orange/20 to-titans-gold/20 rounded-lg p-8 aspect-square flex items-center justify-center">
               <div className="text-center">
+                {/* Features Section 
                 <Gamepad2 className="h-24 w-24 text-titans-gold mx-auto mb-4" />
                 <p className="text-muted-foreground">Campo de futebol robótico</p>
+                */}
+
+                   <img 
+                      src={robotVsss} 
+                      alt="Modalidade robótica" 
+                      className="w-full h-full object-cover transition-all duration-1000"
+               />
+
               </div>
             </div>
           </div>

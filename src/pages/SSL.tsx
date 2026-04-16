@@ -6,6 +6,8 @@ import Footer from "@/components/Footer";
 import { ArrowLeft, Cpu, Network, Zap, Users } from "lucide-react";
 import { Link } from "react-router-dom";
 
+import robotSsl from '@/assets/robotSsl.png';
+
 const SSL = () => {
   return (
     <div className="min-h-screen bg-background">
@@ -15,10 +17,13 @@ const SSL = () => {
       <section className="pt-20 pb-16 bg-gradient-to-b from-background to-muted/20">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-4xl mx-auto text-center">
+
+            {/* 
             <Link to="/" className="inline-flex items-center text-muted-foreground hover:text-foreground mb-6 transition-colors">
               <ArrowLeft className="h-4 w-4 mr-2" />
               Voltar ao início
             </Link>
+            */}
             
             <Badge className="mb-4 bg-gradient-to-r from-blue-500 to-cyan-500 text-white">
               Modalidade
@@ -33,14 +38,19 @@ const SSL = () => {
             <p className="text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
               Small Size League - Futebol robótico de alta performance com robôs omnidirecionais
             </p>
+
             
             <div className="flex flex-wrap justify-center gap-4">
+
+            {/* 
               <Button className="bg-gradient-to-r from-blue-500 to-cyan-500 text-white hover:shadow-lg hover:scale-105" size="lg">
                 Ver Competições
               </Button>
               <Button variant="outline" size="lg">
                 Tecnologia SSL
               </Button>
+            */}
+
             </div>
           </div>
         </div>
@@ -53,13 +63,13 @@ const SSL = () => {
             <div>
               <h2 className="text-3xl font-bold mb-6">Small Size League</h2>
               <p className="text-muted-foreground mb-6">
-                O SSL é a categoria mais avançada do futebol robótico, com robôs omnidirecionais 
-                de alta velocidade que disputam partidas em campo oficial. Cada time pode ter 
-                até 11 robôs simultâneos controlados por IA centralizada.
+                O SSL é uma das categorias mais avançadas do futebol robótico, com robôs omnidirecionais 
+                que disputam partidas em campo oficial. Cada time pode ter 
+                até 11 robôs simultâneos controlados por agentes de IA.
               </p>
               <p className="text-muted-foreground mb-8">
-                Desenvolvemos robôs com rodas omnidirecionais, sistemas de visão global e 
-                algoritmos de planejamento de trajetória para performance máxima.
+                Desenvolvemos robôs com rodas omnidirecionais, sistemas de visão e 
+                algoritmos de planejamento de trajetória para maior performance.
               </p>
               
               <div className="grid grid-cols-2 gap-4">
@@ -68,16 +78,22 @@ const SSL = () => {
                   <div className="text-sm text-muted-foreground">Robôs por Time</div>
                 </div>
                 <div className="text-center">
-                  <div className="text-2xl font-bold text-blue-500">35</div>
-                  <div className="text-sm text-muted-foreground">Km/h Velocidade Máx</div>
+                  <div className="text-2xl font-bold text-blue-500">15</div>
+                  <div className="text-sm text-muted-foreground">Competições</div>
                 </div>
               </div>
             </div>
             
             <div className="bg-gradient-to-br from-blue-500/20 to-cyan-500/20 rounded-lg p-8 aspect-square flex items-center justify-center">
               <div className="text-center">
-                <Network className="h-24 w-24 text-blue-500 mx-auto mb-4" />
-                <p className="text-muted-foreground">Sistema SSL em operação</p>
+                
+               <img 
+                      src={robotSsl} 
+                      alt="Modalidade robótica" 
+                      className="w-full h-full object-cover transition-all duration-1000"
+               />
+
+
               </div>
             </div>
           </div>

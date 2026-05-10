@@ -164,13 +164,13 @@ const SSL = () => {
             </div>
           </div>
 
-          {/* Leaders */}
+          {/* Gerentes */}
           <div className="mb-12">
-            <h3 className="text-xl font-semibold text-center mb-8">Líderes</h3>
+            <h3 className="text-xl font-semibold text-center mb-8">Gerentes de Projeto</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-2xl mx-auto">
               {[
-                { name: "Diego Almeida", role: "Líder Técnico", expertise: "Sistemas Omnidirecionais" },
-                { name: "Beatriz Souza", role: "Líder de IA", expertise: "Planejamento Multi-agente" },
+                { name: "Luiz Amaral", role: "Gerente de Projeto", expertise: "Eletrônica" },
+                { name: "Daniel Lustosa", role: "Gerente de Projeto", expertise: "Eletrônica e Software" },
               ].map((leader, index) => (
                 <Card key={index} className="text-center">
                   <CardContent className="p-6">
@@ -186,16 +186,20 @@ const SSL = () => {
             </div>
           </div>
 
-          {/* Members */}
+          {/* Membros */}
           <div>
             <h3 className="text-xl font-semibold text-center mb-8">Membros</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 max-w-5xl mx-auto">
               {[
-                { name: "Gabriel Pereira", role: "RF Engineer", expertise: "Comunicação e Controle" },
-                { name: "Fernanda Silva", role: "Motion Engineer", expertise: "Controle de Movimento" },
-                { name: "Ricardo Moura", role: "Game Analyst", expertise: "Estratégias de Jogo" },
+                { name: "João Gabryel", role: "Membro", expertise: "Eletrônica" },
+                { name: "Daniel Ricardi", role: "Membro", expertise: "Mecânica" },
+                { name: "Pedro Lucena", role: "Membro", expertise: "Mecânica" },
+                { name: "Gabrielly", role: "Membro", expertise: "Mecânica" },
+                { name: "Raul Braga", role: "Membro", expertise: "Software" },
+                { name: "Gabriel de Sousa", role: "Membro", expertise: "Software" },
+                { name: "Lucas Alves", role: "Membro", expertise: "Software" },
               ].map((member, index) => (
-                <Card key={index} className="text-center">
+                <Card key={`${member.name}-${index}`} className="text-center">
                   <CardContent className="p-6">
                     <div className="w-20 h-20 bg-muted rounded-full mx-auto mb-4 flex items-center justify-center border-2 border-dashed border-border">
                       <span className="text-muted-foreground text-xs">Foto</span>

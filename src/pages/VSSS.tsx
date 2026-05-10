@@ -162,13 +162,13 @@ const VSSS = () => {
             </div>
           </div>
 
-          {/* Leaders */}
+          {/* Gerentes */}
           <div className="mb-12">
-            <h3 className="text-xl font-semibold text-center mb-8">Líderes</h3>
+            <h3 className="text-xl font-semibold text-center mb-8">Gerentes de Projeto</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-2xl mx-auto">
               {[
-                { name: "Sofia Lima", role: "Líder de IA", expertise: "Machine Learning e Estratégia" },
-                { name: "Rafael Oliveira", role: "Líder de Visão", expertise: "Processamento de Imagens" },
+                { name: "Filipe Barbosa", role: "Gerente de Projeto", expertise: "Gestão e desenvolvimento" },
+                { name: "Erick Maciel", role: "Gerente de Projeto", expertise: "Gestão e desenvolvimento" },
               ].map((leader, index) => (
                 <Card key={index} className="text-center">
                   <CardContent className="p-6">
@@ -187,11 +187,14 @@ const VSSS = () => {
           {/* Members */}
           <div>
             <h3 className="text-xl font-semibold text-center mb-8">Membros</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
               {[
-                { name: "Camila Torres", role: "Systems Engineer", expertise: "Integração e Comunicação" },
-                { name: "Eduardo Costa", role: "AI Developer", expertise: "Algoritmos de Decisão" },
-                { name: "Mariana Rocha", role: "Data Analyst", expertise: "Análise de Performance" },
+                { name: "Pietro", role: "Membro", expertise: "Equipe VSSS" },
+                { name: "Yzabella", role: "Membro", expertise: "Equipe VSSS" },
+                { name: "Nathan", role: "Membro", expertise: "Equipe VSSS" },
+                { name: "João Canabarro", role: "Membro", expertise: "Equipe VSSS" },
+                { name: "Félix", role: "Membro", expertise: "Equipe VSSS" },
+                { name: "Arthur Silva", role: "Membro", expertise: "Equipe VSSS" },
               ].map((member, index) => (
                 <Card key={index} className="text-center">
                   <CardContent className="p-6">

@@ -168,8 +168,8 @@ const Combate = () => {
             <h3 className="text-xl font-semibold text-center mb-8">Gerentes de Projeto</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-2xl mx-auto">
               {[
-                { name: "Octávio Silva", role: "Líder de Combate", expertise: "Armas e Sistemas de Ataque" },
-                { name: "Ana Rodrigues", role: "Líder de Defesa", expertise: "Blindagem e Proteção" },
+                { name: "Octávio Silva", role: "Gerente de Projeto", expertise: "Gestão e desenvolvimento" },
+                { name: "Gabriel Cavalcanti", role: "Gerente de Projeto", expertise: "Gestão e desenvolvimento" },
               ].map((leader, index) => (
                 <Card key={index} className="text-center">
                   <CardContent className="p-6">
@@ -188,11 +188,16 @@ const Combate = () => {
           {/* Members */}
           <div>
             <h3 className="text-xl font-semibold text-center mb-8">Membros</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
               {[
-                { name: "Lucas Martins", role: "Pilot", expertise: "Controle e Estratégia" },
-                { name: "Bruno Silva", role: "Weapon Designer", expertise: "Desenvolvimento de Armas" },
-                { name: "Carla Mendes", role: "Systems Analyst", expertise: "Análise de Performance" },
+                { name: "Maria Clara", role: "Membro", expertise: "Equipe de combate" },
+                { name: "Hybson", role: "Membro", expertise: "Equipe de combate" },
+                { name: "Laís", role: "Membro", expertise: "Equipe de combate" },
+                { name: "Osmar", role: "Membro", expertise: "Equipe de combate" },
+                { name: "Paulo Lucca", role: "Membro", expertise: "Equipe de combate" },
+                { name: "Erick", role: "Membro", expertise: "Equipe de combate" },
+                { name: "Rafaela", role: "Membro", expertise: "Equipe de combate" },
+                { name: "Sara", role: "Membro", expertise: "Equipe de combate" },
               ].map((member, index) => (
                 <Card key={index} className="text-center">
                   <CardContent className="p-6">

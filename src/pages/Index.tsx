@@ -545,7 +545,7 @@ const Index = () => {
                   Vaquinha criada em 29/04/2026 na plataforma Vakinha.
                 </p>
 
-                <div className="flex flex-col sm:flex-row gap-4 sm:items-center sm:justify-center">
+                <div className="flex flex-col sm:flex-row gap-4 sm:items-center sm:justify-center mb-8">
                   <Button
                     size="lg"
                     className="bg-gradient-to-r from-titans-red to-titans-orange hover:from-titans-red/90 hover:to-titans-orange/90 text-white font-semibold px-8 shadow-lg shadow-titans-red/25"
@@ -560,6 +560,13 @@ const Index = () => {
                       <ArrowRight className="ml-2 h-4 w-4" />
                     </a>
                   </Button>
+                </div>
+
+                <div className="rounded-xl border border-titans-orange/20 bg-card/60 px-5 py-4 text-center">
+                  <p className="text-sm text-muted-foreground mb-1">Contribua também via Pix</p>
+                  <p className="font-mono text-base font-semibold tracking-tight break-all">
+                    6094196@vakinha.com.br
+                  </p>
                 </div>
               </CardContent>
             </Card>

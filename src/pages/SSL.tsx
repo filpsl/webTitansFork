@@ -11,8 +11,8 @@ import joaoGabryelPhoto from "@/assets/fotosSsl/joaoGabryel.png";
 import luizAmaralPhoto from "@/assets/fotosSsl/luizAmaral.png";
 import danielLustosaPhoto from "@/assets/fotosSsl/danielLustosa.png";
 import danielRicardiPhoto from "@/assets/fotosSsl/daniel.png";
-import gabriellyPhoto from "@/assets/fotosSsl/gabrielly.png";
 import gabriellyCarvalhoPhoto from "@/assets/fotosSsl/gabriellyCarvalho.png";
+import pedroLucenaPhoto from "@/assets/fotosSsl/pedroLucena.png";
 import lucasAlvesPhoto from "@/assets/fotosSsl/lucasAlves.png";
 import raulPhoto from "@/assets/fotosSsl/raul.png";
 
@@ -226,7 +226,7 @@ const SSL = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 max-w-5xl mx-auto">
               {[
                 { name: "João Gabryel", role: "Membro", expertise: "Eletrônica", photo: joaoGabryelPhoto },
-                { name: "Pedro Lucena", role: "Membro", expertise: "Mecânica" },
+                { name: "Pedro Lucena", role: "Membro", expertise: "Mecânica", photo: pedroLucenaPhoto },
                 {
                   name: "Gabrielly Carvalho",
                   role: "Membro",

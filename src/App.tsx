@@ -14,6 +14,7 @@ import SSL from "./pages/SSL";
 import Login from "./pages/Login";
 import Inscricao from "./pages/Inscricao";
 import Produtos from "./pages/Produtos";
+import FeedbackPage from "./pages/FeedbackPage";
 
 const queryClient = new QueryClient();
 
@@ -34,6 +35,7 @@ const App = () => (
             <Route path="/login" element={<Login />} />
             <Route path="/inscricao" element={<Inscricao />} />
             <Route path="/produtos" element={<Produtos />} />
+            <Route path="/feedback" element={<FeedbackPage />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

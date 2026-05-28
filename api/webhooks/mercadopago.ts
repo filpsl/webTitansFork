@@ -22,17 +22,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const body = (req.body ?? {}) as MPWebhookBody;
-  const dataId = body.data?.id != null ? String(body.data.id) : "";
+  // O MP assina o manifest com o data.id da query string; caímos no body se faltar.
+  const queryDataId = req.query?.["data.id"] ?? req.query?.id;
+  const bodyDataId = body.data?.id != null ? String(body.data.id) : undefined;
+  const dataId = String(
+    (Array.isArray(queryDataId) ? queryDataId[0] : queryDataId) ?? bodyDataId ?? ""
+  ).toLowerCase();
   if (!dataId) {
     return res.status(400).json({ error: "data.id ausente" });
   }
 
-  const assinaturaOk = verificarAssinaturaMP({
+  const assinatura = verificarAssinaturaMP({
     headers: req.headers,
     dataId,
     secret,
   });
-  if (!assinaturaOk) {
+  if (!assinatura.ok) {
+    // DIAGNÓSTICO TEMPORÁRIO — remover depois de validar o webhook em produção.
+    console.warn("[webhook] assinatura rejeitada:", assinatura.reason, {
+      hasXSignature: !!req.headers["x-signature"],
+      hasXRequestId: !!req.headers["x-request-id"],
+      dataIdSource: queryDataId ? "query" : bodyDataId ? "body" : "nenhum",
+      dataId,
+    });
     return res.status(401).json({ error: "assinatura inválida" });
   }
 

@@ -30,4 +30,11 @@ venv
 .env.*.local
 .vercel
 
+# Print worker secrets (service_role key)
+print-worker/.env
+
+# Python bytecode
+__pycache__/
+*.pyc
+
 .claude/

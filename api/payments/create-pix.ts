@@ -14,30 +14,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: "pedidoId obrigatório" });
   }
 
-  // DIAGNÓSTICO TEMPORÁRIO — remover depois de identificar o problema.
-  const token = process.env.MERCADOPAGO_ACCESS_TOKEN ?? "";
-  console.log(
-    "[diag] MP token prefix:",
-    token.slice(0, 12),
-    "len:",
-    token.length
-  );
-  try {
-    const meResp = await fetch("https://api.mercadopago.com/users/me", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const meBody = await meResp.json().catch(() => null);
-    console.log("[diag] /users/me status:", meResp.status, "body:", {
-      id: meBody?.id,
-      nickname: meBody?.nickname,
-      site_status: meBody?.site_status,
-      site_id: meBody?.site_id,
-      tags: meBody?.tags,
-    });
-  } catch (e) {
-    console.log("[diag] /users/me erro:", e instanceof Error ? e.message : e);
-  }
-
   const { data: pedido, error: pedidoError } = await supabaseAdmin
     .from("fila_impressao")
     .select("id, status, valor_centavos, num_paginas, modo_cor")

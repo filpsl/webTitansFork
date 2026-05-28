@@ -14,6 +14,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: "pedidoId obrigatório" });
   }
 
+  // DIAGNÓSTICO TEMPORÁRIO — remover depois de identificar o problema.
+  const token = process.env.MERCADOPAGO_ACCESS_TOKEN ?? "";
+  console.log(
+    "[diag] MP token prefix:",
+    token.slice(0, 8),
+    "len:",
+    token.length,
+    "starts-with-TEST?",
+    token.startsWith("TEST-")
+  );
+
   const { data: pedido, error: pedidoError } = await supabaseAdmin
     .from("fila_impressao")
     .select("id, status, valor_centavos, num_paginas, modo_cor")

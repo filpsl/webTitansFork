@@ -83,9 +83,9 @@
 ## 11. Verificação end-to-end (sandbox)
 
 - [ ] 11.1 Rodar `vercel dev` localmente com envs do `.env.local` (sandbox do MP).
-- [ ] 11.2 Fazer um pedido real (PDF de teste) → conferir linha em `fila_impressao` com `AGUARDANDO_PAGAMENTO`.
-- [ ] 11.3 Pagar PIX no sandbox MP → conferir webhook recebido (logs Vercel) e linha atualizada para `PAGO`.
-- [ ] 11.4 Conferir que a UI muda para tela de sucesso em <5 s após o pagamento.
+- [x] 11.2 Fazer um pedido real (PDF de teste) → conferir linha em `fila_impressao` com `AGUARDANDO_PAGAMENTO`.
+- [x] 11.3 Pagar PIX (validado com pagamento real de produção no preview) → webhook recebido e linha atualizada para `PAGO`.
+- [x] 11.4 Conferir que a UI muda para tela de sucesso em <5 s após o pagamento.
 - [ ] 11.5 Testar caso negativo: enviar webhook forjado sem assinatura → deve responder 401 e não alterar banco.
 - [ ] 11.6 Testar reentrega: chamar manualmente o webhook 2x com o mesmo evento → status deve permanecer `PAGO`.
 

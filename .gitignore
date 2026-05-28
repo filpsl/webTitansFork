@@ -30,3 +30,4 @@ venv
 .env.*.local
 .vercel
 
+.claude/

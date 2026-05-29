@@ -2,7 +2,7 @@
 
 - [x] 1.1 Criar a migration que adiciona `IMPRIMINDO` ao `CHECK` de `fila_impressao.status` (drop + recreate do constraint com o novo conjunto de valores).
 - [x] 1.2 Definir a numeração final da migration no apply, considerando coexistência com as migrations do hardening (0002/0003) em outra branch.
-- [ ] 1.3 Rodar a migration no SQL Editor do Supabase (produção) e confirmar sem erros. *(manual)*
+- [x] 1.3 Rodar a migration no SQL Editor do Supabase (produção) e confirmar sem erros. *(manual)*
 
 ## 2. Estrutura do worker
 
@@ -56,9 +56,9 @@
 
 ## 10. Instalação e validação (manual, na sede)
 
-- [ ] 10.1 Instalar CUPS + driver HPLIP da HP Laser 135w; confirmar `lp` manual de um PDF de teste. *(manual)*
-- [ ] 10.2 Instalar o worker: `pip install -r requirements.txt`, criar `.env` `0600` com a `service_role` key e o `PRINTER_NAME`. *(manual)*
-- [ ] 10.3 Instalar e habilitar o serviço systemd; iniciar e acompanhar o journal. *(manual)*
-- [ ] 10.4 Teste end-to-end: pedido real de valor baixo → pagar → confirmar impressão física e `status = 'IMPRESSO'`. *(manual)*
-- [ ] 10.5 Teste de fraude de páginas: pedido com `num_paginas` divergente do PDF → confirmar `ERRO` e que nada é impresso. *(manual)*
-- [ ] 10.6 Teste de claim: rodar duas instâncias e confirmar que um pedido só é impresso uma vez. *(manual)*
+- [x] 10.1 Instalar CUPS + driver HPLIP da HP Laser 135w; confirmar `lp` manual de um PDF de teste. *(manual)*
+- [x] 10.2 Instalar o worker: `pip install -r requirements.txt`, criar `.env` `0600` com a `service_role` key e o `PRINTER_NAME`. *(manual)*
+- [x] 10.3 Instalar e habilitar o serviço systemd; iniciar e acompanhar o journal. *(manual)*
+- [x] 10.4 Teste end-to-end: pedido real de valor baixo → pagar → confirmar impressão física e `status = 'IMPRESSO'`. *(manual)*
+- [x] 10.5 Teste de fraude de páginas: pedido com `num_paginas` divergente do PDF → confirmar `ERRO` e que nada é impresso. *(manual)*
+- [x] 10.6 Teste de claim: rodar duas instâncias e confirmar que um pedido só é impresso uma vez. *(manual)*

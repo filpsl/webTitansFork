@@ -29,6 +29,11 @@ from supabase import Client, create_client
 TABLE = "fila_impressao"
 BUCKET = "pdfs-impressao"
 
+# Locale neutro nos utilitários do CUPS: a saída do `lp` é localizada
+# (ex.: "id de requisição é ..." em pt-BR), e o parsing do job id depende
+# do texto em inglês ("request id is ...").
+CUPS_ENV = {**os.environ, "LC_ALL": "C"}
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -139,10 +144,11 @@ def enviar_para_impressora(cfg: Config, caminho: str) -> str:
         ["lp", "-d", cfg.printer_name, "-n", "1", caminho],
         capture_output=True,
         text=True,
+        env=CUPS_ENV,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"lp falhou: {proc.stderr.strip() or proc.stdout.strip()}")
-    # Saída típica: "request id is Printer-42 (1 file(s))"
+    # Saída típica (locale C): "request id is Printer-42 (1 file(s))"
     match = re.search(r"request id is (\S+)", proc.stdout)
     if not match:
         raise RuntimeError(f"Não consegui extrair job id de: {proc.stdout.strip()!r}")
@@ -157,6 +163,7 @@ def aguardar_conclusao(cfg: Config, job_id: str) -> bool:
             ["lpstat", "-o", cfg.printer_name],
             capture_output=True,
             text=True,
+            env=CUPS_ENV,
         )
         ativos = proc.stdout
         if job_id not in ativos:
@@ -167,7 +174,7 @@ def aguardar_conclusao(cfg: Config, job_id: str) -> bool:
 
 def cancelar_job(job_id: str) -> None:
     try:
-        subprocess.run(["cancel", job_id], capture_output=True, text=True, timeout=10)
+        subprocess.run(["cancel", job_id], capture_output=True, text=True, timeout=10, env=CUPS_ENV)
     except Exception as err:  # noqa: BLE001
         log.warning("Falha ao cancelar job %s: %s", job_id, err)
 

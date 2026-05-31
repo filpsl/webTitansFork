@@ -1,55 +1,106 @@
-# Comandos para executar localmente
+# webTitans
+
+Site da equipe de robótica **TITANS** (FCTE/UnB), construído com **Next.js (App Router)**.
+
+## Pré-requisitos
+
+- **Node.js 20.9+** (recomendado: 22 LTS). O Next.js 16 não roda em versões anteriores.
+- **npm** (vem junto com o Node).
+
+### Instalando o Node
+
+**Windows** — baixe o instalador `.msi` em [nodejs.org](https://nodejs.org) ou use o nvm-windows.
+
+**Linux/macOS** — via nvm:
 
 ```sh
-# 1: Clone o repo
-git clone <url>
-
-obs passos 2 e 3 n são obrigatórios
-
-# 2: virtualize o ambiente com o python
-python -m venv venv
-
-# 3: ative o ambiente virtual
-venv/Scripts/activate no windows, atente de habilitar a execução de scripts
-source venv/bin/activate no linux
-
-obs necessário ter o npm na sua máquina
-
-instale o .msi no windows
-
-no linux basta seguir esse passo a passo:
-
-# Download and install nvm:
+# Baixa e instala o nvm:
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
 
-# in lieu of restarting the shell
+# Recarrega o shell (ou abra um novo terminal):
 \. "$HOME/.nvm/nvm.sh"
 
-# Download and install Node.js:
-nvm install 24
+# Instala e usa o Node 22:
+nvm install 22
+nvm use 22
 
-# Verify the Node.js version:
-node -v # Should print "v24.15.0".
+# Confirme as versões:
+node -v   # v22.x
+npm -v
+```
 
-# Verify npm version:
-npm -v # Should print "11.12.1".
+## Executando localmente
 
-com o npm instalado, continue:
+```sh
+# 1: Clone o repositório
+git clone <url>
+cd webTitans
 
-# 4: dependencias
-npm i
+# 2: Instale as dependências
+npm install
 
-# 5: inicie o ambiente local
+# 3: Inicie o servidor de desenvolvimento
 npm run dev
 ```
 
-## tecnologias utilizadas:
+A aplicação fica disponível em **http://localhost:3000** (com hot reload).
 
-- node.js
-- python
-- Vite
-- TypeScript
+## Variáveis de ambiente
+
+O formulário de feedback usa o EmailJS. Crie um arquivo **`.env.local`** na raiz com:
+
+```sh
+NEXT_PUBLIC_EMAILJS_SERVICE_ID=seu_service_id
+NEXT_PUBLIC_EMAILJS_TEMPLATE_ID=seu_template_id
+NEXT_PUBLIC_EMAILJS_PUBLIC_KEY=sua_public_key
+```
+
+> No Next, variáveis expostas ao navegador precisam do prefixo `NEXT_PUBLIC_`.
+
+## Scripts disponíveis
+
+| Comando | Descrição |
+|---|---|
+| `npm run dev` | Servidor de desenvolvimento (porta 3000) |
+| `npm run build` | Build de produção |
+| `npm run start` | Sobe o build de produção |
+| `npm run lint` | Verifica o código com ESLint |
+
+## Docker
+
+Pré-requisito: ter o Docker instalado. No Windows:
+
+```sh
+winget install -e --id Docker.DockerDesktop
+```
+
+### Opção A — imagem de produção
+
+```sh
+# Build da imagem
+docker build -t auth .
+
+# Executa (a imagem expõe a porta 8080)
+docker run -p 8080:8080 auth
+```
+
+Acesse em **http://localhost:8080**.
+
+### Opção B — desenvolvimento com docker compose
+
+Sobe o `next dev` dentro do container, com o código montado por volume (hot reload via polling):
+
+```sh
+docker compose up
+```
+
+Acesse em **http://localhost:3000**.
+
+## Tecnologias utilizadas
+
+- Next.js (App Router)
 - React
-- shadcn-ui
+- TypeScript
 - Tailwind CSS
-
+- shadcn/ui
+- Docker

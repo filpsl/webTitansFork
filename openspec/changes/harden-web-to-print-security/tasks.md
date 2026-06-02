@@ -1,10 +1,10 @@
 ## 1. Migração SQL de endurecimento
 
-- [ ] 1.1 Criar `supabase/migrations/0002_security_hardening.sql`.
-- [ ] 1.2 Tornar `valor_centavos` nullable: `ALTER TABLE fila_impressao ALTER COLUMN valor_centavos DROP NOT NULL;` e ajustar o check para `CHECK (valor_centavos IS NULL OR valor_centavos > 0)`.
-- [ ] 1.3 Recriar a policy `fila_impressao_anon_insert` adicionando `valor_centavos IS NULL` no `WITH CHECK`.
-- [ ] 1.4 Aplicar restrições no bucket: `UPDATE storage.buckets SET file_size_limit = 31457280, allowed_mime_types = ARRAY['application/pdf'] WHERE id = 'pdfs-impressao';` (30 MB)
-- [ ] 1.5 Habilitar extensões: `CREATE EXTENSION IF NOT EXISTS pg_cron;` e `CREATE EXTENSION IF NOT EXISTS pg_net;` (no schema apropriado, geralmente `extensions`).
+- [x] 1.1 Criar `supabase/migrations/0002_security_hardening.sql`.
+- [x] 1.2 Tornar `valor_centavos` nullable: `ALTER TABLE fila_impressao ALTER COLUMN valor_centavos DROP NOT NULL;` e ajustar o check para `CHECK (valor_centavos IS NULL OR valor_centavos > 0)`.
+- [x] 1.3 Recriar a policy `fila_impressao_anon_insert` adicionando `valor_centavos IS NULL` no `WITH CHECK`.
+- [x] 1.4 Aplicar restrições no bucket: `UPDATE storage.buckets SET file_size_limit = 31457280, allowed_mime_types = ARRAY['application/pdf'] WHERE id = 'pdfs-impressao';` (30 MB)
+- [x] 1.5 Habilitar extensões: `CREATE EXTENSION IF NOT EXISTS pg_cron;` e `CREATE EXTENSION IF NOT EXISTS pg_net;` (no schema apropriado, geralmente `extensions`).
 - [ ] 1.6 Rodar a migração no SQL Editor do Supabase (produção) e confirmar sem erros.
 
 ## 2. Autoridade de preço e de páginas no servidor

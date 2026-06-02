@@ -27,7 +27,7 @@ select cron.schedule(
   '0 * * * *',
   $$
   select net.http_post(
-    url := 'https://<PROJECT_REF>.supabase.co/functions/v1/cleanup-fila',
+    url := 'https://cgkjpodfnfxnrlvnqhki.supabase.co/functions/v1/cleanup-fila',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
       'Authorization', 'Bearer ' || (

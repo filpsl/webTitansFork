@@ -5,7 +5,7 @@
 - [x] 1.3 Recriar a policy `fila_impressao_anon_insert` adicionando `valor_centavos IS NULL` no `WITH CHECK`.
 - [x] 1.4 Aplicar restrições no bucket: `UPDATE storage.buckets SET file_size_limit = 31457280, allowed_mime_types = ARRAY['application/pdf'] WHERE id = 'pdfs-impressao';` (30 MB)
 - [x] 1.5 Habilitar extensões: `CREATE EXTENSION IF NOT EXISTS pg_cron;` e `CREATE EXTENSION IF NOT EXISTS pg_net;` (no schema apropriado, geralmente `extensions`).
-- [ ] 1.6 Rodar a migração no SQL Editor do Supabase (produção) e confirmar sem erros.
+- [x] 1.6 Rodar a migração no SQL Editor do Supabase (produção) e confirmar sem erros.
 
 ## 2. Autoridade de preço e de páginas no servidor
 
@@ -34,8 +34,8 @@
 - [x] 4.5 Limpeza de impressos — estágio 2 (linha aos 6 meses): selecionar `IMPRESSO` com `printed_at < now()-interval '6 months'`, `delete` das linhas (o `pdf_path` já é nulo do estágio 1).
 - [x] 4.6 Nunca tocar em `PAGO` não impresso (garantir pelos filtros).
 - [x] 4.7 Retornar um resumo JSON (`{ orfaos_removidos, pdfs_impressos_removidos, impressos_apagados }`) e logar.
-- [ ] 4.8 Configurar a secret: `supabase secrets set CLEANUP_FUNCTION_SECRET=<valor-aleatorio-longo>`.
-- [ ] 4.9 Deploy: `supabase functions deploy cleanup-fila`.
+- [x] 4.8 Configurar a secret: `supabase secrets set CLEANUP_FUNCTION_SECRET=<valor-aleatorio-longo>`.
+- [x] 4.9 Deploy: `supabase functions deploy cleanup-fila`.
 
 ## 5. Agendamento via pg_cron
 
@@ -51,22 +51,22 @@
 ## 7. Guia de testes de segurança/fraude (reproduzível)
 
 ### 7.1 Fraude de preço e de páginas
-- [ ] 7.1.1 Com a anon key, tentar `insert` em `fila_impressao` com `valor_centavos = 1` → deve ser **rejeitado** pela RLS.
+- [x] 7.1.1 Com a anon key, tentar `insert` em `fila_impressao` com `valor_centavos = 1` → deve ser **rejeitado** pela RLS.
 - [ ] 7.1.2 Criar um pedido normal (sem `valor_centavos`), chamar `create-pix`, e conferir no MP/Supabase que o valor cobrado = `páginas reais × preço`, não 1 centavo.
-- [ ] 7.1.3 Tentar `update` da linha mudando `valor_centavos` com anon key → deve ser **negado**.
+- [x] 7.1.3 Tentar `update` da linha mudando `valor_centavos` com anon key → deve ser **negado**.
 - [ ] 7.1.4 **Fraude de páginas:** criar um pedido com um PDF de várias páginas mas declarando `num_paginas=1`; chamar `create-pix` e conferir que ele cobra pela contagem **real** do arquivo, não por 1 página, e grava o `num_paginas` correto.
 - [ ] 7.1.5 Subir um arquivo que não é PDF de verdade (renomeado) e chamar `create-pix` → deve responder **422** sem criar cobrança no MP.
 
 ### 7.2 RLS / acesso indevido
-- [ ] 7.2.1 Com anon key, tentar `update ... set status='PAGO'` → negado.
-- [ ] 7.2.2 Com anon key, tentar `delete` de uma linha → negado.
-- [ ] 7.2.3 Confirmar que `select` por `id` conhecido funciona, mas não há como listar todas as linhas sem id.
+- [x] 7.2.1 Com anon key, tentar `update ... set status='PAGO'` → negado.
+- [x] 7.2.2 Com anon key, tentar `delete` de uma linha → negado.
+- [x] 7.2.3 Confirmar que `select` por `id` conhecido funciona, mas não há como listar todas as linhas sem id.
 
 ### 7.3 Storage / upload
-- [ ] 7.3.1 Tentar `upload` de um `.png` (content-type image/png) → rejeitado pelo bucket.
-- [ ] 7.3.2 Tentar `upload` de um arquivo > 30 MB (ex.: 40 MB) → rejeitado pelo bucket.
-- [ ] 7.3.3 Tentar `storage.list()` com anon → vazio/403.
-- [ ] 7.3.4 Tentar `GET` público de um objeto do bucket → negado (privado).
+- [x] 7.3.1 Tentar `upload` de um `.png` (content-type image/png) → rejeitado pelo bucket.
+- [x] 7.3.2 Tentar `upload` de um arquivo > 30 MB (ex.: 40 MB) → rejeitado pelo bucket.
+- [x] 7.3.3 Tentar `storage.list()` com anon → vazio/403.
+- [x] 7.3.4 Tentar `GET` público de um objeto do bucket → negado (privado).
 
 ### 7.4 Webhook (regressão da change anterior)
 - [ ] 7.4.1 `POST` no webhook sem `x-signature` → 401, banco intacto.
@@ -78,15 +78,15 @@
 - [ ] 7.5.2 Criar um pedido `PAGO` não impresso com data antiga, invocar a função → **preservado**.
 - [ ] 7.5.3 Criar um pedido `IMPRESSO` com `printed_at` de 8 dias atrás, invocar a função → PDF removido, linha mantida com `pdf_path` null.
 - [ ] 7.5.4 Criar um pedido `IMPRESSO` com `printed_at` de mais de 6 meses atrás (e `pdf_path` já null), invocar a função → linha apagada de `fila_impressao`.
-- [ ] 7.5.5 Invocar a URL da função **sem** o `CLEANUP_FUNCTION_SECRET` → 401, nada apagado.
+- [x] 7.5.5 Invocar a URL da função **sem** o `CLEANUP_FUNCTION_SECRET` → 401, nada apagado.
 
 ### 7.6 Fraude de páginas (risco residual conhecido)
-- [ ] 7.6.1 Documentar/abrir issue no repo do script Python: reconferir contagem de páginas do PDF na impressão e marcar `ERRO` se divergir de `num_paginas`.
+- [x] 7.6.1 Documentar/abrir issue no repo do script Python: reconferir contagem de páginas do PDF na impressão e marcar `ERRO` se divergir de `num_paginas`.
 
 ## 8. Deploy e validação
 
-- [ ] 8.1 Rodar a migração `0002` em produção (Supabase).
-- [ ] 8.2 Deploy da Edge Function + secret + agendamento pg_cron.
+- [x] 8.1 Rodar a migração `0002` em produção (Supabase).
+- [x] 8.2 Deploy da Edge Function + secret + agendamento pg_cron.
 - [ ] 8.3 Abrir PR com as mudanças de `create-pix.ts` e `Impressao.tsx`; mergear para `main`.
 - [ ] 8.4 Executar o guia de testes da seção 7 contra produção (ou preview com credenciais de produção).
 - [ ] 8.5 Após 1–2 horas, conferir `cron.job_run_details` e o nível de uso do Storage no painel do Supabase.

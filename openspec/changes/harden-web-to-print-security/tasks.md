@@ -30,11 +30,12 @@
 - [ ] 4.1 Criar `supabase/functions/cleanup-fila/index.ts` (Deno) usando `@supabase/supabase-js` com `SUPABASE_SERVICE_ROLE_KEY`.
 - [ ] 4.2 Validar o header `Authorization: Bearer <CLEANUP_FUNCTION_SECRET>` (comparação em tempo constante); 401 se não bater.
 - [ ] 4.3 Limpeza de órfãos: selecionar `AGUARDANDO_PAGAMENTO` com `created_at < now()-1h`, coletar `pdf_path`, `storage.remove([...])`, depois `delete` das linhas.
-- [ ] 4.4 Limpeza de impressos: selecionar `IMPRESSO` com `printed_at < now()-7d` e `pdf_path not null`, `storage.remove([...])`, depois `update set pdf_path = null`.
-- [ ] 4.5 Nunca tocar em `PAGO` não impresso (garantir pelos filtros).
-- [ ] 4.6 Retornar um resumo JSON (`{ orfaos_removidos, pdfs_impressos_removidos }`) e logar.
-- [ ] 4.7 Configurar a secret: `supabase secrets set CLEANUP_FUNCTION_SECRET=<valor-aleatorio-longo>`.
-- [ ] 4.8 Deploy: `supabase functions deploy cleanup-fila`.
+- [ ] 4.4 Limpeza de impressos — estágio 1 (PDF aos 7 dias): selecionar `IMPRESSO` com `printed_at < now()-interval '7 days'` e `pdf_path not null`, `storage.remove([...])`, depois `update set pdf_path = null`.
+- [ ] 4.5 Limpeza de impressos — estágio 2 (linha aos 6 meses): selecionar `IMPRESSO` com `printed_at < now()-interval '6 months'`, `delete` das linhas (o `pdf_path` já é nulo do estágio 1).
+- [ ] 4.6 Nunca tocar em `PAGO` não impresso (garantir pelos filtros).
+- [ ] 4.7 Retornar um resumo JSON (`{ orfaos_removidos, pdfs_impressos_removidos, impressos_apagados }`) e logar.
+- [ ] 4.8 Configurar a secret: `supabase secrets set CLEANUP_FUNCTION_SECRET=<valor-aleatorio-longo>`.
+- [ ] 4.9 Deploy: `supabase functions deploy cleanup-fila`.
 
 ## 5. Agendamento via pg_cron
 
@@ -63,7 +64,7 @@
 
 ### 7.3 Storage / upload
 - [ ] 7.3.1 Tentar `upload` de um `.png` (content-type image/png) → rejeitado pelo bucket.
-- [ ] 7.3.2 Tentar `upload` de um arquivo > 50 MB → rejeitado.
+- [ ] 7.3.2 Tentar `upload` de um arquivo > 30 MB (ex.: 40 MB) → rejeitado pelo bucket.
 - [ ] 7.3.3 Tentar `storage.list()` com anon → vazio/403.
 - [ ] 7.3.4 Tentar `GET` público de um objeto do bucket → negado (privado).
 
@@ -76,7 +77,8 @@
 - [ ] 7.5.1 Criar um pedido `AGUARDANDO_PAGAMENTO`, forçar `created_at` para 2h atrás, invocar a função → linha e PDF removidos.
 - [ ] 7.5.2 Criar um pedido `PAGO` não impresso com data antiga, invocar a função → **preservado**.
 - [ ] 7.5.3 Criar um pedido `IMPRESSO` com `printed_at` de 8 dias atrás, invocar a função → PDF removido, linha mantida com `pdf_path` null.
-- [ ] 7.5.4 Invocar a URL da função **sem** o `CLEANUP_FUNCTION_SECRET` → 401, nada apagado.
+- [ ] 7.5.4 Criar um pedido `IMPRESSO` com `printed_at` de mais de 6 meses atrás (e `pdf_path` já null), invocar a função → linha apagada de `fila_impressao`.
+- [ ] 7.5.5 Invocar a URL da função **sem** o `CLEANUP_FUNCTION_SECRET` → 401, nada apagado.
 
 ### 7.6 Fraude de páginas (risco residual conhecido)
 - [ ] 7.6.1 Documentar/abrir issue no repo do script Python: reconferir contagem de páginas do PDF na impressão e marcar `ERRO` se divergir de `num_paginas`.

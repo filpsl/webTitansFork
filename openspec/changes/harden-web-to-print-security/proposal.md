@@ -14,6 +14,7 @@ Precisamos endurecer esses pontos antes de divulgar o serviço amplamente, além
 - **Limpeza automática (retenção):** uma Supabase Edge Function de limpeza, agendada via `pg_cron` (de hora em hora), que:
   - Apaga linha + PDF de pedidos `AGUARDANDO_PAGAMENTO` com mais de **1 hora**.
   - Apaga o PDF (mantém a linha como histórico, anula `pdf_path`) de pedidos `IMPRESSO` com `printed_at` há mais de **7 dias**.
+  - Apaga a **linha inteira** de pedidos `IMPRESSO` com `printed_at` há mais de **6 meses** (o PDF já saiu aos 7 dias; aqui some o registro, por retenção/LGPD).
   - **Nunca** apaga pedidos `PAGO` ainda não impressos.
 - **Proteção contra abuso de upload:** o bucket `pdfs-impressao` passa a ter `file_size_limit` (30 MB) e `allowed_mime_types: ['application/pdf']` no nível do bucket; a limpeza de 1h limita a persistência de uploads órfãos. O teto cai de 50 MB para 30 MB para garantir que o `create-pix` consiga baixar e contar as páginas dentro do limite de 10s da Vercel.
 - **Endurecimento de RLS:** revisão das policies para garantir que `anon` não consiga definir `valor_centavos`, nem fazer UPDATE/DELETE, nem ler linhas além do próprio `id`.

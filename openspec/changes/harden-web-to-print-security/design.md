@@ -15,14 +15,13 @@ Restrições: planos **gratuitos** de Vercel e Supabase. Supabase free suporta `
 ## Goals / Non-Goals
 
 **Goals:**
-- O valor cobrado é **sempre** calculado pelo servidor a partir de `config_precos`; o cliente não consegue influenciar o preço.
-- Storage e tabela permanecem enxutos via limpeza automática (1h não-pago, 7d impresso), sem ação manual.
-- O bucket rejeita uploads que não sejam PDF ou acima de 50 MB.
+- Tanto a **contagem de páginas** quanto o **valor cobrado** são **sempre** determinados pelo servidor (lendo o PDF do Storage e os preços de `config_precos`); o cliente não consegue influenciar nenhum dos dois.
+- Storage e tabela permanecem enxutos via limpeza automática, sem ação manual: não-pago apagado em **1h**, PDF de impresso removido em **7 dias**, e a linha de impresso apagada de vez em **6 meses**.
+- O bucket rejeita uploads que não sejam PDF ou acima de 30 MB.
 - RLS auditada: `anon` não define preço, não faz UPDATE/DELETE, não lê linhas alheias.
 - Roteiro de testes de fraude/segurança reproduzível.
 
 **Non-Goals:**
-- Verificação server-side da contagem de páginas (recontar o PDF no backend) — conflita com a arquitetura "zero processamento de PDF no servidor". Fica como recomendação para o script Python no momento da impressão.
 - Autenticação/contas de usuário.
 - Rate limiting robusto por IP (inviável de forma stateful e barata em serverless free); mitigamos abuso via limites de bucket + limpeza agressiva.
 - Migração de provedor de pagamento ou de hospedagem.
@@ -55,9 +54,10 @@ O `create-pix` roda no plano Hobby (10s, ~1024 MB). O gargalo é o download do P
 
 ### D3. Limpeza via Edge Function + pg_cron (não Vercel Cron)
 
-Uma Edge Function Deno `cleanup-fila` concentra a lógica (em TypeScript, com service_role):
+Uma Edge Function Deno `cleanup-fila` concentra a lógica (em TypeScript, com service_role). São **três regras**, uma retenção em dois estágios para os impressos:
 - **Órfãos:** `SELECT` de `fila_impressao` onde `status='AGUARDANDO_PAGAMENTO' AND created_at < now() - interval '1 hour'` → remove os PDFs (`storage.remove([pdf_path...])`) → `DELETE` das linhas.
-- **Impressos antigos:** `status='IMPRESSO' AND printed_at < now() - interval '7 days' AND pdf_path IS NOT NULL` → remove os PDFs → `UPDATE` setando `pdf_path = NULL` (mantém a linha como histórico).
+- **Impressos — estágio 1 (PDF aos 7 dias):** `status='IMPRESSO' AND printed_at < now() - interval '7 days' AND pdf_path IS NOT NULL` → remove os PDFs → `UPDATE` setando `pdf_path = NULL` (mantém a linha como histórico, sem o arquivo pesado).
+- **Impressos — estágio 2 (linha aos 6 meses):** `status='IMPRESSO' AND printed_at < now() - interval '6 months'` → `DELETE` das linhas. Nesse ponto o `pdf_path` já é nulo (removido no estágio 1), então só resta apagar o registro. Decisão de retenção/LGPD: o histórico do pedido (protocolo, data, valor) não precisa viver para sempre.
 - **Nunca** toca em `PAGO` não impresso.
 
 Agendamento: `pg_cron` roda de **hora em hora** (`0 * * * *`) e dispara a função via `pg_net.http_post` para a URL da Edge Function, com header `Authorization: Bearer <CLEANUP_FUNCTION_SECRET>`. A função valida esse segredo e rejeita 401 se não bater.
@@ -112,9 +112,11 @@ Aplicar em produção (Supabase) na ordem:
 
 **Rollback:** reverter o commit do `create-pix` (volta a cobrar `valor_centavos` da linha — mas como agora é null no insert, seria necessário também reverter a RLS; portanto fazer rollback do par migração+código junto). A Edge Function e o job pg_cron podem ser desabilitados isoladamente (`cron.unschedule`) sem afetar o checkout.
 
-## Open Questions
+## Resolved Questions
 
-- Aumentar a janela de não-pago de 1h para 2h para folga? (default: 1h, conforme escolhido.)
-- O script Python deve reconferir a contagem como defesa em profundidade contra PDFs adversariais (a contagem primária agora é server-side no `create-pix`). Abrir tarefa no repo dele.
-- 30 MB é teto suficiente para os documentos da TITANS? Se aparecerem PDFs maiores, medir o tempo real de download+parse antes de subir o limite.
-- Manter histórico de pedidos `IMPRESSO` indefinidamente (só anulando `pdf_path`) ou também apagar a linha após N meses para LGPD? (default: manter linha, sem dados pessoais relevantes além do protocolo.)
+Decididas em 2026-06-01:
+
+- **Janela de não-pago:** mantida em **1h**. O PIX expira bem antes e o webhook marca `PAGO` quase instantaneamente, então o risco de apagar algo em pagamento é mínimo.
+- **Reconferência de páginas no worker:** **já implementada** — o `print-worker` atual (`contar_paginas` via `pypdf` + verificação anti-fraude) já marca `ERRO` se a contagem real divergir de `num_paginas`. A defesa em profundidade contra PDFs adversariais já existe; nada a abrir.
+- **Teto de tamanho:** **30 MB**, no bucket e no cliente. Dá margem segura para download+parse caberem nos 10s da Vercel. Se aparecerem PDFs maiores, medir o tempo real antes de subir.
+- **Retenção de `IMPRESSO`:** retenção em **dois estágios** — PDF removido aos **7 dias**, linha apagada aos **6 meses** (ver D3). Mais conservador para LGPD do que manter o histórico indefinidamente.

@@ -52,10 +52,10 @@
 
 ### 7.1 Fraude de preço e de páginas
 - [x] 7.1.1 Com a anon key, tentar `insert` em `fila_impressao` com `valor_centavos = 1` → deve ser **rejeitado** pela RLS.
-- [ ] 7.1.2 Criar um pedido normal (sem `valor_centavos`), chamar `create-pix`, e conferir no MP/Supabase que o valor cobrado = `páginas reais × preço`, não 1 centavo.
+- [x] 7.1.2 Criar um pedido normal (sem `valor_centavos`), chamar `create-pix`, e conferir no MP/Supabase que o valor cobrado = `páginas reais × preço`, não 1 centavo.
 - [x] 7.1.3 Tentar `update` da linha mudando `valor_centavos` com anon key → deve ser **negado**.
-- [ ] 7.1.4 **Fraude de páginas:** criar um pedido com um PDF de várias páginas mas declarando `num_paginas=1`; chamar `create-pix` e conferir que ele cobra pela contagem **real** do arquivo, não por 1 página, e grava o `num_paginas` correto.
-- [ ] 7.1.5 Subir um arquivo que não é PDF de verdade (renomeado) e chamar `create-pix` → deve responder **422** sem criar cobrança no MP.
+- [x] 7.1.4 **Fraude de páginas:** criar um pedido com um PDF de várias páginas mas declarando `num_paginas=1`; chamar `create-pix` e conferir que ele cobra pela contagem **real** do arquivo, não por 1 página, e grava o `num_paginas` correto.
+- [x] 7.1.5 Subir um arquivo que não é PDF de verdade (renomeado) e chamar `create-pix` → deve responder **422** sem criar cobrança no MP.
 
 ### 7.2 RLS / acesso indevido
 - [x] 7.2.1 Com anon key, tentar `update ... set status='PAGO'` → negado.
@@ -69,8 +69,8 @@
 - [x] 7.3.4 Tentar `GET` público de um objeto do bucket → negado (privado).
 
 ### 7.4 Webhook (regressão da change anterior)
-- [ ] 7.4.1 `POST` no webhook sem `x-signature` → 401, banco intacto.
-- [ ] 7.4.2 `POST` com assinatura inválida → 401.
+- [x] 7.4.1 `POST` no webhook sem `x-signature` → 401, banco intacto.
+- [x] 7.4.2 `POST` com assinatura inválida → 401.
 - [ ] 7.4.3 Reentrega de um pagamento já `IMPRESSO` → 200, status permanece `IMPRESSO` (idempotência).
 
 ### 7.5 Limpeza / retenção

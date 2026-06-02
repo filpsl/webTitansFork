@@ -49,17 +49,23 @@ Assim, um terceiro não consegue forjar um "pagamento aprovado" para marcar um p
 
 Toda transição de pagamento e de impressão é, portanto, exclusiva do servidor.
 
-## Pontos de atenção (endereçados pelo hardening)
+## Hardening (implementado)
 
-Itens conhecidos, tratados na mudança companheira `harden-web-to-print-security`:
+A mudança companheira `harden-web-to-print-security` (já em produção) tratou:
 
-- **SELECT permissivo** (`using (true)`): quem souber/adivinhar um `id` lê a linha.
-  Mitigação prevista: token de leitura separado da PK.
-- **Valor calculado no cliente**: `valor_centavos` chega do navegador. Mitigação prevista:
-  recalcular no servidor a partir de `config_precos`.
-- **Bucket sem limpeza automática**: acumula PDFs. Mitigação prevista: limpeza via
-  pg_cron. Enquanto isso, **apagar objetos** (não recriar o bucket, para não arriscar
-  torná-lo público).
+- **Valor e páginas no servidor** ✅ — o `create-pix` baixa o PDF, reconta as páginas com
+  `pdf-lib` e recalcula `valor_centavos` a partir de `config_precos`; o cliente não envia
+  mais o preço (a RLS exige `valor_centavos IS NULL`). PDF inválido → 422 sem cobrar.
+  Capability `print-payment-integrity`.
+- **Limpeza automática** ✅ — Edge Function `cleanup-fila` agendada por pg_cron: órfão não
+  pago (1h), PDF de impresso (7 dias) e linha (6 meses). Protegida por
+  `CLEANUP_FUNCTION_SECRET`. Capability `print-data-retention`.
+- **Limites de upload** ✅ — bucket restrito a `application/pdf` e 30 MB, no nível do
+  Storage. Capability `print-upload-abuse-protection`.
+
+Risco conhecido **aceito**: a policy de SELECT permissiva (`using (true)`) — a auditoria
+concluiu que o `id` UUID v4 é inviável de enumerar; um token de leitura separado da PK fica
+como evolução futura.
 
 ---
 

@@ -24,11 +24,15 @@ Entrada: `{ pedidoId: string }`. Passos:
 
 1. Busca o pedido em `fila_impressao`. Responde **404** se não existir, **409** se não
    estiver em `AGUARDANDO_PAGAMENTO`.
-2. Chama `mpPayment.create(...)` com `transaction_amount = valor_centavos / 100`,
-   `payment_method_id: "pix"`, `external_reference: pedido.id` e
+2. **Baixa o PDF** do Storage (service_role), **conta as páginas** com `pdf-lib` e
+   **recalcula** `valor_centavos = páginas reais × config_precos[modo_cor]`, ignorando o
+   que o cliente declarou. PDF inválido/criptografado → **422** sem cobrar.
+3. Chama `mpPayment.create(...)` com `transaction_amount = valor_centavos / 100` (o valor
+   recalculado), `payment_method_id: "pix"`, `external_reference: pedido.id` e
    **`requestOptions.idempotencyKey: pedido.id`**.
-3. Persiste o `mp_payment_id` na linha e devolve
-   `{ qr_code_base64, qr_code_copia_cola, expiration_date_to, mp_payment_id }`.
+4. Persiste `mp_payment_id` + o `num_paginas` e `valor_centavos` **autoritativos**, e
+   devolve `{ qr_code_base64, qr_code_copia_cola, expiration_date_to, mp_payment_id,
+   valor_centavos, num_paginas }`.
 
 ### Idempotência na criação
 
@@ -81,8 +85,9 @@ Endpoint **público** chamado pelo Mercado Pago. Sequência:
   [08](08-seguranca.md).
 - **O `vercel.json`** precisa preservar `/api/*` (a regra de rewrite SPA não pode capturar
   as funções).
-- O `create-pix` cobra `valor_centavos / 100` vindo do pedido; o hardening prevê
-  recalcular esse valor no servidor a partir de `config_precos`.
+- **Preço e contagem são autoridade do servidor**: o `create-pix` baixa o PDF, conta as
+  páginas com `pdf-lib` e recalcula `valor_centavos` a partir de `config_precos` (capability
+  `print-payment-integrity`).
 
 ---
 

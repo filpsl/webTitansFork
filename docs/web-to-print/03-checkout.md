@@ -46,12 +46,12 @@ acompanhando o status. **Não** processa pagamento nem imprime, e só usa a anon
 
 1. Gera um caminho `pdfPath = <uuid>/<nome-sanitizado>.pdf` e faz
    `supabase.storage.from('pdfs-impressao').upload(...)` (sem `upsert`).
-2. `INSERT` em `fila_impressao` com `pdf_path`, `num_paginas`, `modo_cor`,
-   `valor_centavos` — a RLS força `status = 'AGUARDANDO_PAGAMENTO'` por padrão. Recebe o
-   `id` de volta.
-3. `POST /api/payments/create-pix` com `{ pedidoId }`. A resposta
-   (`qr_code_base64`, `qr_code_copia_cola`, `expiration_date_to`, `mp_payment_id`) leva ao
-   passo `PAGAMENTO`.
+2. `INSERT` em `fila_impressao` com `pdf_path`, `num_paginas`, `modo_cor` — **sem**
+   `valor_centavos` (a RLS exige que ele seja `NULL`; o preço é definido pelo servidor). O
+   `status` cai em `AGUARDANDO_PAGAMENTO` por padrão. Recebe o `id` de volta.
+3. `POST /api/payments/create-pix` com `{ pedidoId }`. A resposta (`qr_code_base64`,
+   `qr_code_copia_cola`, `expiration_date_to`, `mp_payment_id`, e o `valor_centavos`/
+   `num_paginas` **autoritativos do servidor**) leva ao passo `PAGAMENTO`.
 
 Se qualquer passo falhar, um toast mostra o erro e o cliente permanece na configuração
 (nenhum pedido "meio-criado" avança).
@@ -85,8 +85,10 @@ O status efetivo é `realtimeStatus ?? query.data` — o que chegar primeiro.
 - **A opção COLORIDO ainda aparece na UI**, mas a 135w é monocromática. A remoção do
   COLORIDO do checkout é uma mudança companheira separada; até lá, pedidos COLORIDO são
   impressos em tons de cinza (com aviso no log do worker).
-- **O `valor_centavos` é calculado no cliente** e enviado no INSERT — falsificável. O
-  hardening (fora do escopo desta doc) prevê recalcular o valor no servidor.
+- **O preço é autoridade do servidor.** A tela de configuração mostra apenas uma
+  *estimativa*; o cliente não envia `valor_centavos` no INSERT. O `create-pix` reconta as
+  páginas do PDF e recalcula o valor (ver [04](04-pagamento-pix.md) e a capability
+  `print-payment-integrity`).
 - A leitura do próprio pedido depende de conhecer o `id` (UUID opaco); ver as ressalvas de
   RLS em [05](05-supabase.md) e [08](08-seguranca.md).
 

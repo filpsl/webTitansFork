@@ -46,7 +46,7 @@
 
 ## 6. Atualizar documentação do contrato
 
-- [ ] 6.1 Atualizar o README interno do change `add-web-to-print` (ou criar um neste change) anotando: preço agora é server-side; recomendação do script Python reconferir `num_paginas` na impressão; nova env `CLEANUP_FUNCTION_SECRET`.
+- [x] 6.1 Atualizar o README interno do change `add-web-to-print` (ou criar um neste change) anotando: preço agora é server-side; recomendação do script Python reconferir `num_paginas` na impressão; nova env `CLEANUP_FUNCTION_SECRET`.
 
 ## 7. Guia de testes de segurança/fraude (reproduzível)
 
@@ -71,7 +71,7 @@
 ### 7.4 Webhook (regressão da change anterior)
 - [x] 7.4.1 `POST` no webhook sem `x-signature` → 401, banco intacto.
 - [x] 7.4.2 `POST` com assinatura inválida → 401.
-- [ ] 7.4.3 Reentrega de um pagamento já `IMPRESSO` → 200, status permanece `IMPRESSO` (idempotência).
+- [x] 7.4.3 Reentrega de um pagamento já `IMPRESSO` → 200, status permanece `IMPRESSO` (idempotência).
 
 ### 7.5 Limpeza / retenção
 - [x] 7.5.1 Criar um pedido `AGUARDANDO_PAGAMENTO`, forçar `created_at` para 2h atrás, invocar a função → linha e PDF removidos.
@@ -87,6 +87,6 @@
 
 - [x] 8.1 Rodar a migração `0002` em produção (Supabase).
 - [x] 8.2 Deploy da Edge Function + secret + agendamento pg_cron.
-- [ ] 8.3 Abrir PR com as mudanças de `create-pix.ts` e `Impressao.tsx`; mergear para `main`.
-- [ ] 8.4 Executar o guia de testes da seção 7 contra produção (ou preview com credenciais de produção).
+- [x] 8.3 Deploy do código via `feat/Impressora` (branch publicada pelo Vercel de teste). Não vai para `main` — `main` é o site oficial, sem a impressora.
+- [x] 8.4 Executar o guia de testes da seção 7 contra produção (ou preview com credenciais de produção).
 - [ ] 8.5 Após 1–2 horas, conferir `cron.job_run_details` e o nível de uso do Storage no painel do Supabase.

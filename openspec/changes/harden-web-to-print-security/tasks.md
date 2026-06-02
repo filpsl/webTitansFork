@@ -9,21 +9,21 @@
 
 ## 2. Autoridade de preço e de páginas no servidor
 
-- [ ] 2.1 Adicionar `pdf-lib` às dependências do `package.json`.
-- [ ] 2.2 Em `api/payments/create-pix.ts`, baixar o PDF do Storage via `supabaseAdmin.storage.from('pdfs-impressao').download(pedido.pdf_path)`.
-- [ ] 2.3 Contar páginas com `pdf-lib`: `(await PDFDocument.load(await blob.arrayBuffer())).getPageCount()`. Envolver em try/catch → se falhar (PDF inválido/criptografado), responder **422** sem cobrar.
-- [ ] 2.4 Buscar os preços em `config_precos` via `supabaseAdmin`.
-- [ ] 2.5 Calcular `valorCentavos = paginasReais * preco[pedido.modo_cor]` no servidor; **não** usar `num_paginas` nem `valor_centavos` vindos do cliente.
-- [ ] 2.6 Cobrar `valorCentavos / 100` no MP (em vez de `pedido.valor_centavos`).
-- [ ] 2.7 Persistir `num_paginas` (real) e `valor_centavos` na linha (junto com `mp_payment_id`).
-- [ ] 2.8 Tratar caso `config_precos` não retornar o `modo_cor` esperado → 500 com log.
+- [x] 2.1 Adicionar `pdf-lib` às dependências do `package.json`.
+- [x] 2.2 Em `api/payments/create-pix.ts`, baixar o PDF do Storage via `supabaseAdmin.storage.from('pdfs-impressao').download(pedido.pdf_path)`.
+- [x] 2.3 Contar páginas com `pdf-lib`: `(await PDFDocument.load(await blob.arrayBuffer())).getPageCount()`. Envolver em try/catch → se falhar (PDF inválido/criptografado), responder **422** sem cobrar.
+- [x] 2.4 Buscar os preços em `config_precos` via `supabaseAdmin`.
+- [x] 2.5 Calcular `valorCentavos = paginasReais * preco[pedido.modo_cor]` no servidor; **não** usar `num_paginas` nem `valor_centavos` vindos do cliente.
+- [x] 2.6 Cobrar `valorCentavos / 100` no MP (em vez de `pedido.valor_centavos`).
+- [x] 2.7 Persistir `num_paginas` (real) e `valor_centavos` na linha (junto com `mp_payment_id`).
+- [x] 2.8 Tratar caso `config_precos` não retornar o `modo_cor` esperado → 500 com log.
 
 ## 3. Frontend: parar de enviar preço, alinhar limite
 
-- [ ] 3.1 Em `src/pages/Impressao.tsx`, remover `valor_centavos` do objeto do `insert` em `fila_impressao` (enviar só `pdf_path`, `num_paginas`, `modo_cor`).
-- [ ] 3.2 Manter o cálculo client-side de páginas/valor apenas como **estimativa visual** na tela de configuração (deixar claro que a contagem e o valor finais são confirmados no servidor/PIX).
-- [ ] 3.3 Após `create-pix`, exibir na tela de pagamento o `valor` que veio do servidor (já é o caso, mas confirmar que não usa o valor local).
-- [ ] 3.4 Em `src/lib/pdf-utils.ts`, reduzir `MAX_PDF_BYTES` de 50 MB para **30 MB** (casar com o `file_size_limit` do bucket) e ajustar a mensagem de erro.
+- [x] 3.1 Em `src/pages/Impressao.tsx`, remover `valor_centavos` do objeto do `insert` em `fila_impressao` (enviar só `pdf_path`, `num_paginas`, `modo_cor`).
+- [x] 3.2 Manter o cálculo client-side de páginas/valor apenas como **estimativa visual** na tela de configuração (deixar claro que a contagem e o valor finais são confirmados no servidor/PIX).
+- [x] 3.3 Após `create-pix`, exibir na tela de pagamento o `valor` que veio do servidor (create-pix passou a retornar `valor_centavos`/`num_paginas`; a tela usa esses valores).
+- [x] 3.4 Em `src/lib/pdf-utils.ts`, reduzir `MAX_PDF_BYTES` de 50 MB para **30 MB** (casar com o `file_size_limit` do bucket) e ajustar a mensagem de erro. Também atualizado o texto "Máximo 50 MB" em `UploadPDF.tsx`.
 
 ## 4. Edge Function de limpeza
 

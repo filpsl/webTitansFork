@@ -21,6 +21,9 @@ type DadosPagamento = {
   qr_code_copia_cola: string;
   expiration_date_to: string | null;
   mp_payment_id: string;
+  // Valor e contagem autoritativos calculados pelo servidor (create-pix).
+  valor_centavos: number;
+  num_paginas: number;
 };
 
 const Impressao = () => {
@@ -45,19 +48,20 @@ const Impressao = () => {
         .upload(pdfPath, file, { contentType: "application/pdf", upsert: false });
       if (uploadError) throw uploadError;
 
+      // valor_centavos NÃO é enviado: o servidor (create-pix) é a autoridade
+      // de preço, calculando a partir da contagem real de páginas do PDF.
+      // num_paginas vai como estimativa do cliente, mas é reconferido no servidor.
       const { data: pedido, error: insertError } = await supabase
         .from("fila_impressao")
         .insert({
           pdf_path: pdfPath,
           num_paginas: numPaginas,
           modo_cor: args.modoCor,
-          valor_centavos: args.valorCentavos,
         })
         .select("id")
         .single();
       if (insertError) throw insertError;
 
-      setValorCentavos(args.valorCentavos);
       setPedidoId(pedido.id);
 
       const resp = await fetch("/api/payments/create-pix", {
@@ -70,6 +74,9 @@ const Impressao = () => {
         throw new Error(body.error ?? "Falha ao gerar PIX");
       }
       const dados = (await resp.json()) as DadosPagamento;
+      // Exibe o valor e a contagem autoritativos vindos do servidor.
+      setValorCentavos(dados.valor_centavos);
+      setNumPaginas(dados.num_paginas);
       setPagamento(dados);
       setPasso("PAGAMENTO");
     } catch (err) {

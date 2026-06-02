@@ -77,7 +77,7 @@ export function UploadPDF({ onPDFPronto }: Props) {
             <>
               <Upload className="mx-auto h-12 w-12 text-muted-foreground mb-3" />
               <p className="font-medium">Clique ou arraste seu PDF aqui</p>
-              <p className="text-sm text-muted-foreground mt-1">Máximo 50 MB</p>
+              <p className="text-sm text-muted-foreground mt-1">Máximo 30 MB</p>
             </>
           ) : (
             <div className="flex flex-col items-center gap-2">

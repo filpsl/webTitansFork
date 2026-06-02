@@ -27,21 +27,21 @@
 
 ## 4. Edge Function de limpeza
 
-- [ ] 4.1 Criar `supabase/functions/cleanup-fila/index.ts` (Deno) usando `@supabase/supabase-js` com `SUPABASE_SERVICE_ROLE_KEY`.
-- [ ] 4.2 Validar o header `Authorization: Bearer <CLEANUP_FUNCTION_SECRET>` (comparação em tempo constante); 401 se não bater.
-- [ ] 4.3 Limpeza de órfãos: selecionar `AGUARDANDO_PAGAMENTO` com `created_at < now()-1h`, coletar `pdf_path`, `storage.remove([...])`, depois `delete` das linhas.
-- [ ] 4.4 Limpeza de impressos — estágio 1 (PDF aos 7 dias): selecionar `IMPRESSO` com `printed_at < now()-interval '7 days'` e `pdf_path not null`, `storage.remove([...])`, depois `update set pdf_path = null`.
-- [ ] 4.5 Limpeza de impressos — estágio 2 (linha aos 6 meses): selecionar `IMPRESSO` com `printed_at < now()-interval '6 months'`, `delete` das linhas (o `pdf_path` já é nulo do estágio 1).
-- [ ] 4.6 Nunca tocar em `PAGO` não impresso (garantir pelos filtros).
-- [ ] 4.7 Retornar um resumo JSON (`{ orfaos_removidos, pdfs_impressos_removidos, impressos_apagados }`) e logar.
+- [x] 4.1 Criar `supabase/functions/cleanup-fila/index.ts` (Deno) usando `@supabase/supabase-js` com `SUPABASE_SERVICE_ROLE_KEY`.
+- [x] 4.2 Validar o header `Authorization: Bearer <CLEANUP_FUNCTION_SECRET>` (comparação em tempo constante); 401 se não bater.
+- [x] 4.3 Limpeza de órfãos: selecionar `AGUARDANDO_PAGAMENTO` com `created_at < now()-1h`, coletar `pdf_path`, `storage.remove([...])`, depois `delete` das linhas.
+- [x] 4.4 Limpeza de impressos — estágio 1 (PDF aos 7 dias): selecionar `IMPRESSO` com `printed_at < now()-interval '7 days'` e `pdf_path not null`, `storage.remove([...])`, depois `update set pdf_path = null`.
+- [x] 4.5 Limpeza de impressos — estágio 2 (linha aos 6 meses): selecionar `IMPRESSO` com `printed_at < now()-interval '6 months'`, `delete` das linhas (o `pdf_path` já é nulo do estágio 1).
+- [x] 4.6 Nunca tocar em `PAGO` não impresso (garantir pelos filtros).
+- [x] 4.7 Retornar um resumo JSON (`{ orfaos_removidos, pdfs_impressos_removidos, impressos_apagados }`) e logar.
 - [ ] 4.8 Configurar a secret: `supabase secrets set CLEANUP_FUNCTION_SECRET=<valor-aleatorio-longo>`.
 - [ ] 4.9 Deploy: `supabase functions deploy cleanup-fila`.
 
 ## 5. Agendamento via pg_cron
 
-- [ ] 5.1 Criar SQL de agendamento (pode ir em `0002` ou num `0003_schedule_cleanup.sql`) usando `cron.schedule(...)` + `net.http_post(...)` apontando para a URL da Edge Function.
-- [ ] 5.2 Passar o header `Authorization: Bearer <CLEANUP_FUNCTION_SECRET>` na chamada `http_post`.
-- [ ] 5.3 Agendar de hora em hora: `'0 * * * *'`.
+- [x] 5.1 Criar SQL de agendamento (`0003_schedule_cleanup.sql`) usando `cron.schedule(...)` + `net.http_post(...)` apontando para a URL da Edge Function. Segredo lido do Vault (não vai no arquivo).
+- [x] 5.2 Passar o header `Authorization: Bearer <CLEANUP_FUNCTION_SECRET>` na chamada `http_post`.
+- [x] 5.3 Agendar de hora em hora: `'0 * * * *'`.
 - [ ] 5.4 Conferir o job: `SELECT * FROM cron.job;` e, após uma hora, `SELECT * FROM cron.job_run_details ORDER BY start_time DESC LIMIT 5;`.
 
 ## 6. Atualizar documentação do contrato

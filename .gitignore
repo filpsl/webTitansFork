@@ -38,3 +38,6 @@ __pycache__/
 *.pyc
 
 .claude/
+
+# Supabase CLI local state
+supabase/.temp/

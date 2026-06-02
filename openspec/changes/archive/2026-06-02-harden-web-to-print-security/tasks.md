@@ -74,10 +74,10 @@
 - [ ] 7.4.3 Reentrega de um pagamento já `IMPRESSO` → 200, status permanece `IMPRESSO` (idempotência).
 
 ### 7.5 Limpeza / retenção
-- [ ] 7.5.1 Criar um pedido `AGUARDANDO_PAGAMENTO`, forçar `created_at` para 2h atrás, invocar a função → linha e PDF removidos.
-- [ ] 7.5.2 Criar um pedido `PAGO` não impresso com data antiga, invocar a função → **preservado**.
-- [ ] 7.5.3 Criar um pedido `IMPRESSO` com `printed_at` de 8 dias atrás, invocar a função → PDF removido, linha mantida com `pdf_path` null.
-- [ ] 7.5.4 Criar um pedido `IMPRESSO` com `printed_at` de mais de 6 meses atrás (e `pdf_path` já null), invocar a função → linha apagada de `fila_impressao`.
+- [x] 7.5.1 Criar um pedido `AGUARDANDO_PAGAMENTO`, forçar `created_at` para 2h atrás, invocar a função → linha e PDF removidos.
+- [x] 7.5.2 Criar um pedido `PAGO` não impresso com data antiga, invocar a função → **preservado**.
+- [x] 7.5.3 Criar um pedido `IMPRESSO` com `printed_at` de 8 dias atrás, invocar a função → PDF removido, linha mantida com `pdf_path` null.
+- [x] 7.5.4 Criar um pedido `IMPRESSO` com `printed_at` de mais de 6 meses atrás (e `pdf_path` já null), invocar a função → linha apagada de `fila_impressao`.
 - [x] 7.5.5 Invocar a URL da função **sem** o `CLEANUP_FUNCTION_SECRET` → 401, nada apagado.
 
 ### 7.6 Fraude de páginas (risco residual conhecido)

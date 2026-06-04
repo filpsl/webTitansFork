@@ -12,6 +12,7 @@ export type Pedido = {
   created_at: string;
   pdf_path: string;
   num_paginas: number;
+  quantidade_copias: number;
   modo_cor: ModoCor;
   valor_centavos: number;
   status: StatusPedido;

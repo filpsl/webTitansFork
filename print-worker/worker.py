@@ -138,10 +138,18 @@ def contar_paginas(pdf_bytes: bytes) -> int:
     return len(reader.pages)
 
 
-def enviar_para_impressora(cfg: Config, caminho: str) -> str:
-    """Envia o arquivo via lp e retorna o job id do CUPS."""
+def quantidade_copias_do_pedido(pedido: dict) -> int:
+    """Lê quantidade_copias da linha com fallback 1 (linhas legadas/None) e piso 1."""
+    valor = pedido.get("quantidade_copias")
+    if not isinstance(valor, int) or valor < 1:
+        return 1
+    return valor
+
+
+def enviar_para_impressora(cfg: Config, caminho: str, quantidade_copias: int) -> str:
+    """Envia o arquivo via lp (com N cópias) e retorna o job id do CUPS."""
     proc = subprocess.run(
-        ["lp", "-d", cfg.printer_name, "-n", "1", caminho],
+        ["lp", "-d", cfg.printer_name, "-n", str(quantidade_copias), caminho],
         capture_output=True,
         text=True,
         env=CUPS_ENV,
@@ -184,6 +192,7 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
     pdf_path = pedido["pdf_path"]
     num_paginas = pedido["num_paginas"]
     modo_cor = pedido.get("modo_cor")
+    quantidade_copias = quantidade_copias_do_pedido(pedido)
 
     # Download + reconferência de páginas.
     try:
@@ -223,13 +232,19 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
             fh.write(pdf_bytes)
 
         try:
-            job_id = enviar_para_impressora(cfg, caminho)
+            job_id = enviar_para_impressora(cfg, caminho, quantidade_copias)
         except Exception as err:  # noqa: BLE001
             log.error("Pedido %s: envio para impressora falhou: %s", pedido_id, err)
             mark(sb, pedido_id, "ERRO")
             return
 
-        log.info("Pedido %s: enviado ao CUPS (job %s, %s páginas)", pedido_id, job_id, paginas_reais)
+        log.info(
+            "Pedido %s: enviado ao CUPS (job %s, %s páginas, %s cópias)",
+            pedido_id,
+            job_id,
+            paginas_reais,
+            quantidade_copias,
+        )
 
         if aguardar_conclusao(cfg, job_id):
             mark(sb, pedido_id, "IMPRESSO", {"printed_at": now_iso()})

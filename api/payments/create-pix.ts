@@ -39,7 +39,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const { data: pedido, error: pedidoError } = await supabaseAdmin
     .from("fila_impressao")
-    .select("id, status, pdf_path, modo_cor")
+    .select("id, status, pdf_path, modo_cor, quantidade_copias")
     .eq("id", pedidoId)
     .maybeSingle();
 
@@ -93,7 +93,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: "Erro interno" });
   }
 
-  const valorCentavos = paginasReais * preco.valor_centavos_por_pagina;
+  // A quantidade vem da própria linha (autoridade do servidor), nunca do request.
+  // Linhas legadas sem o campo caem no piso 1.
+  const quantidadeCopias =
+    Number.isInteger(pedido.quantidade_copias) && pedido.quantidade_copias >= 1
+      ? pedido.quantidade_copias
+      : 1;
+
+  const valorCentavos = paginasReais * quantidadeCopias * preco.valor_centavos_por_pagina;
 
   const host = req.headers["x-forwarded-host"] ?? req.headers.host;
   const protocol = (req.headers["x-forwarded-proto"] as string) ?? "https";
@@ -103,7 +110,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const result = await mpPayment.create({
       body: {
         transaction_amount: valorCentavos / 100,
-        description: `Impressão TITANS — ${paginasReais} págs ${pedido.modo_cor}`,
+        description: `Impressão TITANS — ${paginasReais} págs x ${quantidadeCopias} cópias ${pedido.modo_cor}`,
         payment_method_id: "pix",
         payer: {
           email: "cliente@titans.unb.br",

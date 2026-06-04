@@ -35,7 +35,11 @@ const Impressao = () => {
   const [pagamento, setPagamento] = useState<DadosPagamento | null>(null);
   const [enviando, setEnviando] = useState(false);
 
-  async function confirmarConfiguracao(args: { modoCor: ModoCor; valorCentavos: number }) {
+  async function confirmarConfiguracao(args: {
+    modoCor: ModoCor;
+    quantidadeCopias: number;
+    valorCentavos: number;
+  }) {
     if (!file) return;
     setEnviando(true);
     try {
@@ -56,6 +60,7 @@ const Impressao = () => {
         .insert({
           pdf_path: pdfPath,
           num_paginas: numPaginas,
+          quantidade_copias: args.quantidadeCopias,
           modo_cor: args.modoCor,
         })
         .select("id")

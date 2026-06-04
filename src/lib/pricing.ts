@@ -20,8 +20,13 @@ export async function fetchPrecos(): Promise<Precos> {
   return precos as Precos;
 }
 
-export function calcularValor(numPaginas: number, modo: ModoCor, precos: Precos): number {
-  return numPaginas * precos[modo];
+export function calcularValor(
+  numPaginas: number,
+  quantidadeCopias: number,
+  modo: ModoCor,
+  precos: Precos,
+): number {
+  return numPaginas * quantidadeCopias * precos[modo];
 }
 
 export function formatBRL(centavos: number): string {

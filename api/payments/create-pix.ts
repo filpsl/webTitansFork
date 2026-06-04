@@ -5,6 +5,26 @@ import { mpPayment } from "../_lib/mercadopago.js";
 
 const BUCKET = "pdfs-impressao";
 
+const PIX_VALIDADE_MS = 30 * 60 * 1000; // 30 minutos
+
+// O Mercado Pago exige date_of_expiration em ISO com offset de fuso explícito
+// (ex.: 2026-06-02T15:04:05.000-03:00); o "Z" do toISOString() é recusado.
+// A Vercel roda em UTC, então montamos a representação no fuso de Brasília
+// (-03:00, sem horário de verão) a partir do instante desejado.
+function isoComOffsetBrasilia(date: Date): string {
+  const offsetMin = -180; // -03:00
+  const local = new Date(date.getTime() + offsetMin * 60 * 1000);
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  const yyyy = local.getUTCFullYear();
+  const MM = p(local.getUTCMonth() + 1);
+  const dd = p(local.getUTCDate());
+  const HH = p(local.getUTCHours());
+  const mm = p(local.getUTCMinutes());
+  const ss = p(local.getUTCSeconds());
+  const ms = p(local.getUTCMilliseconds(), 3);
+  return `${yyyy}-${MM}-${dd}T${HH}:${mm}:${ss}.${ms}-03:00`;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -91,6 +111,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         },
         external_reference: pedido.id,
         notification_url: notificationUrl,
+        date_of_expiration: isoComOffsetBrasilia(new Date(Date.now() + PIX_VALIDADE_MS)),
       },
       requestOptions: { idempotencyKey: pedido.id },
     });

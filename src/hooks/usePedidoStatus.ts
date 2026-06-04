@@ -3,23 +3,34 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { StatusPedido } from "@/lib/types";
 
-const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutos
-
 type Resultado = {
   status: StatusPedido | null;
   isLoading: boolean;
   error: "TIMEOUT" | "FETCH" | null;
 };
 
-export function usePedidoStatus(pedidoId: string | null): Resultado {
+// A janela de acompanhamento dura até a expiração real do QR
+// (expiration_date_to): única fonte de verdade, sem corte fixo.
+export function usePedidoStatus(
+  pedidoId: string | null,
+  expirationDateTo?: string | null
+): Resultado {
   const [realtimeStatus, setRealtimeStatus] = useState<StatusPedido | null>(null);
   const [timedOut, setTimedOut] = useState(false);
 
   useEffect(() => {
-    if (!pedidoId) return;
-    const timer = setTimeout(() => setTimedOut(true), TIMEOUT_MS);
+    setTimedOut(false);
+    if (!pedidoId || !expirationDateTo) return;
+    const expMs = new Date(expirationDateTo).getTime();
+    if (!Number.isFinite(expMs)) return;
+    const restante = expMs - Date.now();
+    if (restante <= 0) {
+      setTimedOut(true);
+      return;
+    }
+    const timer = setTimeout(() => setTimedOut(true), restante);
     return () => clearTimeout(timer);
-  }, [pedidoId]);
+  }, [pedidoId, expirationDateTo]);
 
   useEffect(() => {
     if (!pedidoId) return;

@@ -13,8 +13,8 @@ export async function fetchPrecos(): Promise<Precos> {
     precos[row.modo_cor] = row.valor_centavos_por_pagina;
   }
 
-  if (precos.PB === undefined || precos.COLORIDO === undefined) {
-    throw new Error("config_precos incompleta — faltam linhas PB e/ou COLORIDO");
+  if (precos.PB === undefined) {
+    throw new Error("config_precos incompleta — falta a linha PB");
   }
 
   return precos as Precos;

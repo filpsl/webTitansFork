@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { fetchPrecos, calcularValor, formatBRL } from "@/lib/pricing";
 import type { ModoCor, Precos } from "@/lib/types";
+
+// A HP 135w é monocromática, então o checkout oferece apenas P&B.
+const MODO_COR: ModoCor = "PB";
 
 type Props = {
   numPaginas: number;
@@ -16,7 +18,6 @@ type Props = {
 
 export function ConfiguracaoImpressao({ numPaginas, enviando, onConfirmar, onVoltar }: Props) {
   const [precos, setPrecos] = useState<Precos | null>(null);
-  const [modo, setModo] = useState<ModoCor>("PB");
 
   useEffect(() => {
     fetchPrecos()
@@ -24,7 +25,7 @@ export function ConfiguracaoImpressao({ numPaginas, enviando, onConfirmar, onVol
       .catch(() => toast.error("Não foi possível carregar os preços."));
   }, []);
 
-  const valor = precos ? calcularValor(numPaginas, modo, precos) : 0;
+  const valor = precos ? calcularValor(numPaginas, MODO_COR, precos) : 0;
 
   return (
     <Card>
@@ -37,32 +38,16 @@ export function ConfiguracaoImpressao({ numPaginas, enviando, onConfirmar, onVol
           <p className="text-2xl font-semibold">{numPaginas}</p>
         </div>
 
-        <div className="space-y-3">
+        <div className="space-y-1">
           <Label>Modo de cor</Label>
-          <RadioGroup value={modo} onValueChange={(v) => setModo(v as ModoCor)}>
-            <div className="flex items-center space-x-2">
-              <RadioGroupItem value="PB" id="modo-pb" />
-              <Label htmlFor="modo-pb" className="font-normal">
-                Preto e branco
-                {precos && (
-                  <span className="text-muted-foreground ml-2">
-                    ({formatBRL(precos.PB)}/página)
-                  </span>
-                )}
-              </Label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <RadioGroupItem value="COLORIDO" id="modo-cor" />
-              <Label htmlFor="modo-cor" className="font-normal">
-                Colorido
-                {precos && (
-                  <span className="text-muted-foreground ml-2">
-                    ({formatBRL(precos.COLORIDO)}/página)
-                  </span>
-                )}
-              </Label>
-            </div>
-          </RadioGroup>
+          <p className="font-normal">
+            Preto e branco
+            {precos && (
+              <span className="text-muted-foreground ml-2">
+                ({formatBRL(precos.PB)}/página)
+              </span>
+            )}
+          </p>
         </div>
 
         <div className="border-t border-border pt-4 flex items-baseline justify-between">
@@ -75,7 +60,7 @@ export function ConfiguracaoImpressao({ numPaginas, enviando, onConfirmar, onVol
             Voltar
           </Button>
           <Button
-            onClick={() => onConfirmar({ modoCor: modo, valorCentavos: valor })}
+            onClick={() => onConfirmar({ modoCor: MODO_COR, valorCentavos: valor })}
             disabled={!precos || enviando}
           >
             {enviando ? "Enviando…" : "Pagar com PIX"}

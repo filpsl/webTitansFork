@@ -38,7 +38,7 @@ export function TelaPagamento({
   onPago,
   onTimeout,
 }: Props) {
-  const { status, error } = usePedidoStatus(pedidoId);
+  const { status, error } = usePedidoStatus(pedidoId, expirationDateTo);
   const [restantes, setRestantes] = useState<number | null>(() =>
     calcSegundosRestantes(expirationDateTo)
   );

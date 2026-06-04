@@ -14,11 +14,11 @@
 ## 3. Timezone de Brasília no banco
 
 - [x] 3.1 Criar `supabase/migrations/0006_timezone_brasilia.sql` com `alter database postgres set timezone to 'America/Sao_Paulo';` e comentário explicando o efeito (só exibição; `timestamptz` segue em UTC).
-- [ ] 3.2 (produção) Rodar a `0006` no SQL Editor e confirmar com `show timezone;` e `select now();` (numa sessão nova).
+- [x] 3.2 (produção) Rodar a `0006` no SQL Editor e confirmar com `show timezone;` e `select now();` (numa sessão nova).
 
 ## 4. Validação e deploy
 
 - [x] 4.1 `npm run build` sem erros.
-- [ ] 4.2 Deploy via `feat/Impressora` (Vercel de teste).
-- [ ] 4.3 Testar no site: checkout oferece só "Preto e branco"; criar um PIX e conferir que o contador começa em ~30:00 **e** que a tela não cai para "Pagamento não confirmado" aos 10 min.
-- [ ] 4.4 Conferir no SQL Editor que `now()` e os timestamps aparecem em horário de Brasília.
+- [x] 4.2 Deploy via `feat/Impressora` (Vercel de teste).
+- [x] 4.3 Testar no site: checkout oferece só "Preto e branco"; criar um PIX e conferir que o contador começa em ~30:00 **e** que a tela não cai para "Pagamento não confirmado" aos 10 min.
+- [x] 4.4 Conferir no SQL Editor que `now()` e os timestamps aparecem em horário de Brasília.

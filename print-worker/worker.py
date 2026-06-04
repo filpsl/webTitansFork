@@ -23,7 +23,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 from supabase import Client, create_client
 
 TABLE = "fila_impressao"
@@ -146,10 +146,29 @@ def quantidade_copias_do_pedido(pedido: dict) -> int:
     return valor
 
 
-def enviar_para_impressora(cfg: Config, caminho: str, quantidade_copias: int) -> str:
-    """Envia o arquivo via lp (com N cópias) e retorna o job id do CUPS."""
+def replicar_pdf(pdf_bytes: bytes, copias: int) -> bytes:
+    """Concatena o documento `copias` vezes num único PDF (cópias intercaladas).
+
+    Driver-independente: a HP Laser 135w ignora a opção de cópias do CUPS
+    (`lp -n` / `-o copies`), então replicamos as páginas no próprio arquivo e
+    imprimimos um único job de 1 cópia. Para `copias <= 1` retorna o original.
+    """
+    if copias <= 1:
+        return pdf_bytes
+    writer = PdfWriter()
+    for _ in range(copias):
+        # Reabrir o reader a cada volta evita reutilizar os mesmos objetos de
+        # página (referências compartilhadas) entre as cópias.
+        writer.append(PdfReader(io.BytesIO(pdf_bytes)))
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def enviar_para_impressora(cfg: Config, caminho: str) -> str:
+    """Envia o arquivo via lp (1 job) e retorna o job id do CUPS."""
     proc = subprocess.run(
-        ["lp", "-d", cfg.printer_name, "-n", str(quantidade_copias), caminho],
+        ["lp", "-d", cfg.printer_name, caminho],
         capture_output=True,
         text=True,
         env=CUPS_ENV,
@@ -225,14 +244,17 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
             pedido_id,
         )
 
-    # Impressão.
+    # Impressão. A 135w ignora a opção de cópias do CUPS, então as cópias são
+    # materializadas no próprio PDF e enviadas como um único job.
+    pdf_para_imprimir = replicar_pdf(pdf_bytes, quantidade_copias)
+
     fd, caminho = tempfile.mkstemp(suffix=".pdf", prefix="print-worker-")
     try:
         with os.fdopen(fd, "wb") as fh:
-            fh.write(pdf_bytes)
+            fh.write(pdf_para_imprimir)
 
         try:
-            job_id = enviar_para_impressora(cfg, caminho, quantidade_copias)
+            job_id = enviar_para_impressora(cfg, caminho)
         except Exception as err:  # noqa: BLE001
             log.error("Pedido %s: envio para impressora falhou: %s", pedido_id, err)
             mark(sb, pedido_id, "ERRO")

@@ -39,15 +39,34 @@ Erros transitórios no ciclo são logados e **não** derrubam o worker (o loop c
 2. **Contagem real** (`contar_paginas`, via `pypdf`) — PDF criptografado/ilegível → `ERRO`.
 3. **Verificação anti-fraude** — se `paginas_reais != num_paginas` → `ERRO` (não imprime).
    O cliente conta páginas no navegador (falsificável); aqui é a autoridade.
-4. **Impressão** (`enviar_para_impressora`) — grava o PDF num arquivo temporário e chama
-   `lp -d <PRINTER_NAME> -n 1 <arquivo>`. Extrai o job id da saída do CUPS.
-5. **Conclusão** (`aguardar_conclusao`) — faz polling com `lpstat -o` até o job sumir da
-   fila ou estourar `PRINT_TIMEOUT`. Concluiu → `IMPRESSO` + `printed_at`. Timeout →
-   cancela o job e marca `ERRO`.
+4. **Escolha de fila + impressão** (`filas_candidatas`, `fila_saudavel`,
+   `enviar_para_impressora`) — grava o PDF num arquivo temporário e tenta as filas em ordem
+   (primária Wi-Fi → fallback USB). Pula filas insalubres (`lpstat -p`) e submete via
+   `lp -d <fila> <arquivo>`, extraindo o job id da saída do CUPS.
+5. **Conclusão** (`aguardar_conclusao`) — faz polling com `lpstat -o <fila>` na fila onde o
+   job foi aceito, até o job sumir ou estourar `PRINT_TIMEOUT`. Concluiu → `IMPRESSO` +
+   `printed_at`. Timeout → cancela o job e marca `ERRO`.
 
 > Os utilitários do CUPS rodam com `LC_ALL=C` para que a saída do `lp` fique em inglês
 > ("request id is ...") e o parsing do job id funcione independentemente do locale da
 > máquina.
+
+## Failover entre filas (anti-duplicação)
+
+A impressora é usada por **Wi-Fi** (fila driverless IPP Everywhere `Titans_Laser`), porque a
+fila **USB** driverless do modelo travava e imprimia lixo. A USB fica como **fallback**
+opcional (`PRINTER_NAME_FALLBACK`). O failover é **restrito à pré-submissão**:
+
+- **Failover seguro:** se a fila primária falha **antes de o CUPS aceitar o job** (insalubre
+  no health-check, host `.local` não resolve, impressora inalcançável, `lp` com erro, ou job
+  id não extraível — sinalizado pela exceção `FalhaPreSubmissao`), o worker submete o mesmo
+  arquivo à fila de fallback. Nada foi impresso, então reenviar é seguro.
+- **Sem failover após a aceitação:** uma vez obtido o job id, o worker **nunca** tenta outra
+  fila. Um timeout de conclusão cancela o job e marca `ERRO`. Como o worker materializa N
+  cópias no próprio PDF, reimprimir um job já aceito poderia duplicar dezenas de folhas — na
+  dúvida, prefere-se `ERRO` (intervenção manual) a reimprimir.
+- **Retrocompatível:** sem `PRINTER_NAME_FALLBACK`, o worker opera só com a primária, sem
+  failover, idêntico ao comportamento de fila única anterior.
 
 ## Configuração (`.env`)
 
@@ -55,7 +74,8 @@ Erros transitórios no ciclo são logados e **não** derrubam o worker (o loop c
 | --- | :---: | --- | --- |
 | `SUPABASE_URL` | sim | — | URL do projeto. |
 | `SUPABASE_SERVICE_ROLE_KEY` | sim | — | service_role (segredo; bypassa RLS). |
-| `PRINTER_NAME` | sim | — | Nome da fila CUPS (`lpstat -p`). |
+| `PRINTER_NAME` | sim | — | Fila CUPS primária (Wi-Fi `Titans_Laser`; `lpstat -p`). |
+| `PRINTER_NAME_FALLBACK` | não | — | Fila CUPS de fallback (USB); failover só na pré-submissão. |
 | `POLL_INTERVAL` | não | `10` | Segundos entre consultas à fila. |
 | `PRINT_TIMEOUT` | não | `180` | Segundos de espera pela conclusão do job. |
 | `STUCK_TIMEOUT` | não | `900` | Segundos até re-filar um pedido travado em `IMPRIMINDO`. |

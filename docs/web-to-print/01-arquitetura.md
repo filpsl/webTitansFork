@@ -9,7 +9,7 @@
 | **Checkout** (`src/`) | Recebe o PDF, conta páginas, calcula preço, cria o pedido, dispara o PIX e acompanha o status até o sucesso. | Nunca processa o pagamento nem imprime; não tem segredos de servidor. |
 | **Pagamento PIX** (`api/`) | Gera a cobrança PIX no Mercado Pago e processa o webhook de confirmação, escrevendo o status no banco. | Nunca toca o arquivo PDF. |
 | **Armazenamento** (Supabase) | Guarda o PDF (Storage), a fila e os preços (Postgres), aplica RLS e publica mudanças via Realtime. | Não tem lógica de negócio; é o ponto de encontro dos outros três. |
-| **Print worker** (`print-worker/`) | Detecta pedidos pagos, baixa o PDF, reconfere páginas e imprime na 135w via CUPS. | Não fala com o Mercado Pago nem com o cliente. |
+| **Print worker** (`print-worker/`) | Detecta pedidos pagos, baixa o PDF, reconfere páginas e imprime na HP Laser MFP via fila CUPS de rede (Wi-Fi), com fallback USB. | Não fala com o Mercado Pago nem com o cliente. |
 
 ## As três fronteiras de execução
 
@@ -34,7 +34,9 @@ segurança da arquitetura** — o que cada fronteira pode fazer é deliberadamen
 
 ### 3. Sede (confiável, com estado físico)
 
-- Máquina Linux ligada à HP Laser MFP 135w, rodando o worker Python como serviço systemd.
+- Máquina Linux que imprime na HP Laser MFP por uma fila CUPS de rede (Wi-Fi / IPP
+  Everywhere `Titans_Laser`), com fila USB de fallback, rodando o worker Python como serviço
+  systemd.
 - Também detém a **`service_role` key**, num `.env` com permissão `0600` (ver [08](08-seguranca.md)).
 - É o **único lugar fora da Vercel que lê o PDF de volta** — porque é onde a impressão
   física acontece.

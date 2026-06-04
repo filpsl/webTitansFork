@@ -11,13 +11,18 @@ está em `print-worker/README.md`; aqui fica o essencial e o dia a dia.
 rodada no Supabase (adiciona o status `IMPRIMINDO`). Sem ela, o claim atômico viola o
 CHECK constraint.
 
-1. **CUPS + driver HP (HPLIP):**
+1. **CUPS + filas (sem HPLIP):** a HP Laser MFP 131/133/135/138 imprime driverless (IPP
+   Everywhere). **Não** use `hp-setup`/HPLIP — a fila USB driverless travava e cuspia lixo,
+   então use a impressora por **Wi-Fi**.
    ```bash
-   sudo apt install cups hplip
+   sudo apt install cups
    sudo systemctl enable --now cups
-   hp-setup                 # detecta/instala a 135w (USB ou rede)
-   lpstat -p                # anote o nome exato da fila → PRINTER_NAME
-   lp -d <PRINTER_NAME> /usr/share/cups/data/testprint   # teste físico
+   avahi-browse -rt _ipp._tcp        # descubra o nome .local da impressora
+   # Fila primária Wi-Fi (use o nome .local, não o IP — DHCP muda):
+   sudo lpadmin -p Titans_Laser -E -v ipp://NOME.local/ipp/print -m everywhere
+   # (Opcional) fila USB de fallback driverless: HP_Laser_MFP_131_133_135_138
+   lpstat -p                         # confira os nomes das filas
+   lp -d Titans_Laser /usr/share/cups/data/testprint   # teste físico (saída limpa)
    ```
 2. **Worker em caminho estável + venv:**
    ```bash
@@ -26,7 +31,8 @@ CHECK constraint.
    python3 -m venv .venv
    .venv/bin/pip install -r requirements.txt
    cp .env.example .env && chmod 600 .env
-   # edite .env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, PRINTER_NAME
+   # edite .env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, PRINTER_NAME (Titans_Laser)
+   # e, opcionalmente, PRINTER_NAME_FALLBACK (fila USB)
    ```
 3. **systemd:**
    ```bash
@@ -60,14 +66,17 @@ sudo systemctl restart print-worker
 ## Pedidos em `ERRO`
 
 O worker marca `ERRO` (sem retry automático) quando: o download falha após retentativas; o
-PDF é inválido/criptografado; **a contagem real diverge** de `num_paginas`; ou a impressão
-não conclui dentro de `PRINT_TIMEOUT` (impressora offline, sem papel, atolada).
+PDF é inválido/criptografado; **a contagem real diverge** de `num_paginas`; **nenhuma fila
+aceita o job** (primária e fallback falham na pré-submissão); ou a impressão não conclui
+dentro de `PRINT_TIMEOUT` após a aceitação (impressora offline, sem papel, atolada) — nesse
+caso **sem** failover, para não duplicar as cópias.
 
 **Diagnóstico:**
 ```bash
 journalctl -u print-worker | grep <id-do-pedido>
 ```
-A linha de log indica a causa (download, PDF inválido, divergência, timeout).
+A linha de log indica a causa (download, PDF inválido, divergência, fila escolhida/failover,
+timeout) e, em caso de aceitação, a fila e o job id.
 
 **Tratamento:**
 
@@ -79,7 +88,9 @@ A linha de log indica a causa (download, PDF inválido, divergência, timeout).
   o worker o pega no próximo ciclo.
 - **PDF inválido ou divergência de páginas:** mantenha em `ERRO` e trate com o cliente
   (reembolso/contato). Não force a impressão.
-- **Já imprimiu mas ficou `ERRO`** (ex.: falhou só o parsing pós-impressão): marque como
+- **Já imprimiu mas ficou `ERRO`** (timeout pós-aceitação, ou parsing pós-impressão): o log
+  mostra o job **aceito** numa fila mas sem conclusão confirmada (failover é evitado de
+  propósito para não duplicar). Confirme fisicamente a folha; se saiu correta, marque como
   impresso para não reimprimir —
   ```sql
   update fila_impressao set status='IMPRESSO', printed_at=now() where id='<id>';

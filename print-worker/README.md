@@ -17,21 +17,37 @@ rodada no Supabase (adiciona o status `IMPRIMINDO`).
 
 Na máquina (Linux):
 
-1. **CUPS + driver da HP Laser 135w (HPLIP).**
+1. **CUPS (sem HPLIP).** A HP Laser MFP 131/133/135/138 imprime por CUPS
+   **driverless** (IPP Everywhere) — **não** use `hp-setup`/HPLIP. A fila USB
+   driverless deste modelo travava e cuspia páginas com lixo; por isso a
+   impressora é usada por **Wi-Fi**.
    ```bash
-   sudo apt install cups hplip
+   sudo apt install cups
    sudo systemctl enable --now cups
-   # Detecta e instala a impressora (USB ou rede):
-   hp-setup
    ```
-2. **Confirme a fila e imprima um teste manual:**
-   ```bash
-   lpstat -p              # lista as filas; anote o nome exato (PRINTER_NAME)
-   lp -d <PRINTER_NAME> /usr/share/cups/data/testprint
-   ```
-   Se sair papel, o CUPS está ok.
 
-3. **Python 3.10+** disponível.
+2. **Crie a fila de rede primária (Wi-Fi / IPP Everywhere).** Ligue a impressora
+   no Wi-Fi e crie a fila apontando para o nome **mDNS `.local`** dela — não use
+   o IP, que é DHCP na rede da faculdade (`10.74.x.x`) e muda:
+   ```bash
+   # Descubra o nome .local da impressora na rede:
+   avahi-browse -rt _ipp._tcp
+   # Crie a fila driverless (ajuste NOME.local):
+   sudo lpadmin -p Titans_Laser -E -v ipp://NOME.local/ipp/print -m everywhere
+   ```
+
+3. **(Opcional) Fila USB de fallback.** Mantenha a fila USB driverless como rede
+   de segurança (`HP_Laser_MFP_131_133_135_138`). O worker só cai para ela
+   quando a fila Wi-Fi falha **antes** de o CUPS aceitar o job (failover seguro).
+
+4. **Confirme as filas e imprima um teste manual:**
+   ```bash
+   lpstat -p              # lista as filas; anote os nomes exatos
+   lp -d Titans_Laser /usr/share/cups/data/testprint
+   ```
+   Se sair papel **limpo**, o CUPS está ok.
+
+5. **Python 3.10+** disponível.
 
 ## Instalação do worker
 
@@ -47,7 +63,8 @@ python3 -m venv .venv
 # Configuração (NUNCA commitar este arquivo).
 cp .env.example .env
 chmod 600 .env
-# edite .env e preencha SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, PRINTER_NAME
+# edite .env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, PRINTER_NAME (fila Wi-Fi
+# Titans_Laser) e, opcionalmente, PRINTER_NAME_FALLBACK (fila USB de fallback)
 ```
 
 Teste rodando em primeiro plano antes de instalar como serviço:
@@ -79,10 +96,25 @@ em `IMPRIMINDO` por mais de `STUCK_TIMEOUT` (padrão 15 min) voltam sozinhos par
 | --- | --- | --- | --- |
 | `SUPABASE_URL` | sim | — | URL do projeto Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | sim | — | service_role key (segredo; bypassa RLS) |
-| `PRINTER_NAME` | sim | — | Nome da fila CUPS (`lpstat -p`) |
+| `PRINTER_NAME` | sim | — | Fila CUPS primária (Wi-Fi `Titans_Laser`; `lpstat -p`) |
+| `PRINTER_NAME_FALLBACK` | não | — | Fila CUPS de fallback (USB); failover só na pré-submissão |
 | `POLL_INTERVAL` | não | `10` | Segundos entre consultas à fila |
 | `PRINT_TIMEOUT` | não | `180` | Segundos de espera pela conclusão do job |
 | `STUCK_TIMEOUT` | não | `900` | Segundos até re-filar um pedido travado em IMPRIMINDO |
+
+## Failover entre filas (anti-duplicação)
+
+Quando `PRINTER_NAME_FALLBACK` está configurada, o worker tenta a fila primária
+(Wi-Fi) e, **só se ela falhar antes de o CUPS aceitar o job** (fila insalubre no
+health-check, host `.local` não resolve, impressora inalcançável, `lp` com erro,
+ou job id não extraível), submete o mesmo arquivo à fila de fallback. Nesses
+casos é seguro afirmar que **nada foi impresso**.
+
+Depois que o CUPS aceita o job, o worker **nunca** faz failover: um timeout de
+conclusão cancela o job e marca `ERRO`. Como o worker materializa N cópias no
+próprio PDF, reimprimir um job já aceito poderia duplicar **dezenas** de folhas —
+por isso, na dúvida, o pedido vira `ERRO` para intervenção manual. Sem
+`PRINTER_NAME_FALLBACK`, o worker opera só com a primária, como antes.
 
 ## Operação: pedidos em ERRO
 
@@ -91,8 +123,14 @@ O worker marca `status = 'ERRO'` (sem retry automático) quando:
 - o **download** do PDF falha após retentativas;
 - o **PDF é inválido/criptografado**;
 - a **contagem real de páginas diverge** de `num_paginas` (proteção contra fraude);
-- a **impressão não conclui** dentro de `PRINT_TIMEOUT` (impressora offline, sem papel,
-  atolada).
+- **nenhuma fila aceita o job** (primária e fallback falham na pré-submissão);
+- a **impressão não conclui** dentro de `PRINT_TIMEOUT` após a aceitação
+  (impressora offline, sem papel, atolada) — **sem** failover, para não duplicar.
+
+> Se os logs mostram que o job foi **aceito** numa fila mas deu timeout, a folha
+> pode ter saído mesmo assim (falso negativo). Confirme fisicamente: se a
+> impressão saiu correta, marque o pedido como `IMPRESSO` manualmente em vez de
+> re-filar para `PAGO` (re-filar reimprimiria todas as cópias).
 
 Tratamento manual de um pedido em `ERRO`:
 

@@ -1,8 +1,8 @@
 # Web-to-Print — Documentação da feature
 
 Serviço de impressão sob demanda acoplado ao site da TITANS: qualquer pessoa envia um PDF
-em `/impressao`, paga via PIX, e o documento é impresso na **HP Laser MFP 135w** na sede,
-sem intervenção manual da equipe.
+em `/impressao`, paga via PIX, e o documento é impresso na **HP Laser MFP** na sede (fila
+CUPS de rede Wi-Fi, com fallback USB), sem intervenção manual da equipe.
 
 ## Visão geral em uma página
 

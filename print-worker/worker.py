@@ -42,11 +42,22 @@ logging.basicConfig(
 log = logging.getLogger("print-worker")
 
 
+class FalhaPreSubmissao(Exception):
+    """Falha ocorrida ANTES de o CUPS aceitar o job (nada foi impresso).
+
+    Sinaliza que é seguro tentar a próxima fila (failover): a fila estava
+    insalubre, o `lp` retornou erro de submissão, ou retornou sucesso mas sem
+    job id rastreável. Distinta de qualquer falha pós-aceitação, em que o
+    failover é proibido para não duplicar a impressão.
+    """
+
+
 class Config:
     def __init__(self) -> None:
         self.supabase_url = os.environ.get("SUPABASE_URL", "").strip()
         self.service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
         self.printer_name = os.environ.get("PRINTER_NAME", "").strip()
+        self.printer_name_fallback = os.environ.get("PRINTER_NAME_FALLBACK", "").strip()
         self.poll_interval = int(os.environ.get("POLL_INTERVAL", "10"))
         self.print_timeout = int(os.environ.get("PRINT_TIMEOUT", "180"))
         self.stuck_timeout = int(os.environ.get("STUCK_TIMEOUT", "900"))
@@ -64,6 +75,19 @@ class Config:
             raise SystemExit(
                 "Variáveis de ambiente obrigatórias ausentes: " + ", ".join(missing)
             )
+
+
+def filas_candidatas(cfg: Config) -> list[str]:
+    """Filas a tentar, em ordem de prioridade: primária e, se houver, fallback.
+
+    Retorna `[primária]` ou `[primária, fallback]`. A fallback é ignorada
+    quando vazia ou idêntica à primária (failover para a mesma fila é inócuo e
+    só confundiria os logs). Sem fallback, o comportamento é o de fila única.
+    """
+    filas = [cfg.printer_name]
+    if cfg.printer_name_fallback and cfg.printer_name_fallback != cfg.printer_name:
+        filas.append(cfg.printer_name_fallback)
+    return filas
 
 
 def now_iso() -> str:
@@ -165,29 +189,58 @@ def replicar_pdf(pdf_bytes: bytes, copias: int) -> bytes:
     return out.getvalue()
 
 
-def enviar_para_impressora(cfg: Config, caminho: str) -> str:
-    """Envia o arquivo via lp (1 job) e retorna o job id do CUPS."""
+def fila_saudavel(fila: str) -> bool:
+    """Best-effort: a fila existe e está habilitada (`enabled`) no CUPS.
+
+    Usa `lpstat -p <fila>`. Uma fila habilitada reporta "is idle"/"now printing";
+    uma desabilitada/parada reporta "disabled". Erro/timeout do comando é tratado
+    como insalubre. NÃO é a garantia anti-duplicação — só ajuda a escolher uma
+    fila viva antes de submeter; a segurança vem da classificação de erro.
+    """
+    try:
+        proc = subprocess.run(
+            ["lpstat", "-p", fila],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=CUPS_ENV,
+        )
+    except Exception as err:  # noqa: BLE001 - timeout/erro => insalubre
+        log.warning("Health-check da fila %s falhou: %s", fila, err)
+        return False
+    if proc.returncode != 0:
+        return False
+    return "disabled" not in proc.stdout
+
+
+def enviar_para_impressora(fila: str, caminho: str) -> str:
+    """Envia o arquivo via lp (1 job) na `fila` e retorna o job id do CUPS.
+
+    Levanta `FalhaPreSubmissao` se o `lp` retornar erro ou se o job id não for
+    extraível — ambos casos em que o CUPS NÃO aceitou o job (nada impresso),
+    logo é seguro tentar a próxima fila.
+    """
     proc = subprocess.run(
-        ["lp", "-d", cfg.printer_name, caminho],
+        ["lp", "-d", fila, caminho],
         capture_output=True,
         text=True,
         env=CUPS_ENV,
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"lp falhou: {proc.stderr.strip() or proc.stdout.strip()}")
+        raise FalhaPreSubmissao(f"lp falhou: {proc.stderr.strip() or proc.stdout.strip()}")
     # Saída típica (locale C): "request id is Printer-42 (1 file(s))"
     match = re.search(r"request id is (\S+)", proc.stdout)
     if not match:
-        raise RuntimeError(f"Não consegui extrair job id de: {proc.stdout.strip()!r}")
+        raise FalhaPreSubmissao(f"Não consegui extrair job id de: {proc.stdout.strip()!r}")
     return match.group(1)
 
 
-def aguardar_conclusao(cfg: Config, job_id: str) -> bool:
+def aguardar_conclusao(cfg: Config, fila: str, job_id: str) -> bool:
     """Espera o job sumir da fila de não-concluídos. True se concluiu no tempo."""
     deadline = time.monotonic() + cfg.print_timeout
     while time.monotonic() < deadline:
         proc = subprocess.run(
-            ["lpstat", "-o", cfg.printer_name],
+            ["lpstat", "-o", fila],
             capture_output=True,
             text=True,
             env=CUPS_ENV,
@@ -200,6 +253,7 @@ def aguardar_conclusao(cfg: Config, job_id: str) -> bool:
 
 
 def cancelar_job(job_id: str) -> None:
+    """Cancela o job pelo seu id (único no CUPS, já inclui a fila no nome)."""
     try:
         subprocess.run(["cancel", job_id], capture_output=True, text=True, timeout=10, env=CUPS_ENV)
     except Exception as err:  # noqa: BLE001
@@ -253,28 +307,66 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
         with os.fdopen(fd, "wb") as fh:
             fh.write(pdf_para_imprimir)
 
-        try:
-            job_id = enviar_para_impressora(cfg, caminho)
-        except Exception as err:  # noqa: BLE001
-            log.error("Pedido %s: envio para impressora falhou: %s", pedido_id, err)
-            mark(sb, pedido_id, "ERRO")
+        # Failover restrito à PRÉ-SUBMISSÃO. Tentamos as filas em ordem; uma
+        # falha antes de o CUPS aceitar o job (fila insalubre, lp com erro, ou
+        # job id não extraível) é segura para tentar a próxima. Uma vez aceito o
+        # job, NUNCA tentamos outra fila — o pedido resolve em IMPRESSO ou ERRO
+        # naquela fila, evitando reimpressão duplicada das N cópias.
+        filas = filas_candidatas(cfg)
+        for indice, fila in enumerate(filas):
+            if not fila_saudavel(fila):
+                log.warning(
+                    "Pedido %s: fila %s insalubre (health-check) -> %s",
+                    pedido_id,
+                    fila,
+                    "tentando fallback" if indice + 1 < len(filas) else "sem mais filas",
+                )
+                continue  # falha de pré-submissão implícita: nada submetido
+
+            try:
+                job_id = enviar_para_impressora(fila, caminho)
+            except FalhaPreSubmissao as err:
+                log.warning(
+                    "Pedido %s: pré-submissão à fila %s falhou (%s) -> %s",
+                    pedido_id,
+                    fila,
+                    err,
+                    "failover para fallback" if indice + 1 < len(filas) else "sem mais filas",
+                )
+                continue  # seguro: nada impresso -> próxima fila
+
+            # A PARTIR DAQUI o CUPS aceitou o job: sem failover.
+            log.info(
+                "Pedido %s: aceito pela fila %s (job %s, %s páginas, %s cópias)",
+                pedido_id,
+                fila,
+                job_id,
+                paginas_reais,
+                quantidade_copias,
+            )
+
+            if aguardar_conclusao(cfg, fila, job_id):
+                mark(sb, pedido_id, "IMPRESSO", {"printed_at": now_iso()})
+                log.info("Pedido %s: IMPRESSO (fila %s)", pedido_id, fila)
+            else:
+                log.error(
+                    "Pedido %s: timeout após aceitação na fila %s (job %s) -> ERRO "
+                    "(failover deliberadamente evitado para não duplicar)",
+                    pedido_id,
+                    fila,
+                    job_id,
+                )
+                cancelar_job(job_id)
+                mark(sb, pedido_id, "ERRO")
             return
 
-        log.info(
-            "Pedido %s: enviado ao CUPS (job %s, %s páginas, %s cópias)",
+        # Esgotou todas as filas só com falhas de pré-submissão: nada impresso.
+        log.error(
+            "Pedido %s: nenhuma fila aceitou o job (%s) -> ERRO (nada impresso)",
             pedido_id,
-            job_id,
-            paginas_reais,
-            quantidade_copias,
+            ", ".join(filas),
         )
-
-        if aguardar_conclusao(cfg, job_id):
-            mark(sb, pedido_id, "IMPRESSO", {"printed_at": now_iso()})
-            log.info("Pedido %s: IMPRESSO", pedido_id)
-        else:
-            log.error("Pedido %s: timeout de impressão (job %s) -> ERRO", pedido_id, job_id)
-            cancelar_job(job_id)
-            mark(sb, pedido_id, "ERRO")
+        mark(sb, pedido_id, "ERRO")
     finally:
         try:
             os.unlink(caminho)
@@ -286,8 +378,9 @@ def main() -> None:
     cfg = Config()
     sb = create_client(cfg.supabase_url, cfg.service_role_key)
     log.info(
-        "Print worker iniciado (impressora=%s, poll=%ss, print_timeout=%ss, stuck_timeout=%ss)",
+        "Print worker iniciado (impressora=%s, fallback=%s, poll=%ss, print_timeout=%ss, stuck_timeout=%ss)",
         cfg.printer_name,
+        cfg.printer_name_fallback or "(nenhuma)",
         cfg.poll_interval,
         cfg.print_timeout,
         cfg.stuck_timeout,

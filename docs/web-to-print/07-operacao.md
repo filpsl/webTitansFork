@@ -96,6 +96,19 @@ timeout) e, em caso de aceitação, a fila e o job id.
   update fila_impressao set status='IMPRESSO', printed_at=now() where id='<id>';
   ```
 
+**Impressora Wi-Fi inalcançável (failover automático):** se o Wi-Fi da impressora cai, o
+worker detecta o destino inalcançável **antes de submeter** (resolução mDNS do nome `.local` +
+TCP-connect à porta IPP, timeout `REACHABILITY_TIMEOUT`, padrão 3 s) e faz failover para a fila
+USB de fallback **sem nada ter sido impresso na Wi-Fi** — o log mostra `fila <Wi-Fi> de rede
+inalcançável (pré-submissão, nada impresso) -> failover para fallback`. Sem fila de fallback,
+o pedido vira `ERRO` "nada impresso" (re-filar para `PAGO` é seguro). Isso depende do
+`avahi-daemon` ativo para resolver o `.local`.
+
+> **Runbook de teste do failover:** desligue o Wi-Fi da impressora e submeta um pedido.
+> Confirme nos logs que a primária foi considerada **inalcançável (pré-submissão)** e que a
+> impressão saiu pela **USB sem duplicar** páginas. Religue o Wi-Fi e confirme que a impressão
+> volta a sair pela fila Wi-Fi.
+
 > Pedidos presos em `IMPRIMINDO` voltam sozinhos para `PAGO` só após `STUCK_TIMEOUT`
 > (padrão 15 min). Para reprocessar antes, mude o status para `PAGO` manualmente.
 

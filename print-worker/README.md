@@ -101,14 +101,29 @@ em `IMPRIMINDO` por mais de `STUCK_TIMEOUT` (padrão 15 min) voltam sozinhos par
 | `POLL_INTERVAL` | não | `10` | Segundos entre consultas à fila |
 | `PRINT_TIMEOUT` | não | `180` | Segundos de espera pela conclusão do job |
 | `STUCK_TIMEOUT` | não | `900` | Segundos até re-filar um pedido travado em IMPRIMINDO |
+| `REACHABILITY_TIMEOUT` | não | `3` | Timeout (s) da checagem de alcançabilidade do destino de filas de rede antes de submeter |
 
 ## Failover entre filas (anti-duplicação)
 
 Quando `PRINTER_NAME_FALLBACK` está configurada, o worker tenta a fila primária
-(Wi-Fi) e, **só se ela falhar antes de o CUPS aceitar o job** (fila insalubre no
-health-check, host `.local` não resolve, impressora inalcançável, `lp` com erro,
-ou job id não extraível), submete o mesmo arquivo à fila de fallback. Nesses
-casos é seguro afirmar que **nada foi impresso**.
+(Wi-Fi) e, **só se ela falhar antes de o CUPS aceitar o job**, submete o mesmo
+arquivo à fila de fallback. Nesses casos é seguro afirmar que **nada foi
+impresso**. Contam como falha de pré-submissão: fila insalubre no health-check,
+**destino de rede inalcançável**, `lp` com erro, ou job id não extraível.
+
+**Checagem de alcançabilidade do destino (antes de submeter).** Para filas de
+rede (device-uri `ipp://`/`ipps://`/`http://`/`socket://`), o worker não confia
+apenas no estado `enabled` do `lpstat -p` — ele **permanece `enabled` mesmo com a
+impressora Wi-Fi desligada**, o que fazia o job ficar preso e cair em `ERRO` sem
+failover. Antes de submeter, o worker resolve o host do device-uri (mDNS `.local`
+via `getent`/`avahi-resolve-host-name`) e faz um TCP-connect curto à porta IPP
+(timeout `REACHABILITY_TIMEOUT`, padrão 3 s). Se o host não resolve ou a porta
+recusa conexão, a fila é tratada como **inalcançável (pré-submissão, nada
+impresso)** e o worker faz failover para a USB **sem nunca submeter à Wi-Fi**.
+Filas USB/locais (`usb://`, `hp:/usb/...`) **não** sofrem essa checagem de rede;
+e se o device-uri não for interpretável, o worker degrada para o health-check
+(`lpstat -p`) — nunca bloqueia a impressão por falha de parsing. Isso depende de
+resolução **mDNS** (`avahi-daemon` ativo) para o nome `.local`.
 
 Depois que o CUPS aceita o job, o worker **nunca** faz failover: um timeout de
 conclusão cancela o job e marca `ERRO`. Como o worker materializa N cópias no

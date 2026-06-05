@@ -58,9 +58,17 @@ fila **USB** driverless do modelo travava e imprimia lixo. A USB fica como **fal
 opcional (`PRINTER_NAME_FALLBACK`). O failover é **restrito à pré-submissão**:
 
 - **Failover seguro:** se a fila primária falha **antes de o CUPS aceitar o job** (insalubre
-  no health-check, host `.local` não resolve, impressora inalcançável, `lp` com erro, ou job
-  id não extraível — sinalizado pela exceção `FalhaPreSubmissao`), o worker submete o mesmo
-  arquivo à fila de fallback. Nada foi impresso, então reenviar é seguro.
+  no health-check, **destino de rede inalcançável**, `lp` com erro, ou job id não extraível —
+  sinalizado pela exceção `FalhaPreSubmissao`), o worker submete o mesmo arquivo à fila de
+  fallback. Nada foi impresso, então reenviar é seguro.
+- **Checagem de alcançabilidade antes de submeter:** o estado `enabled` do `lpstat -p`
+  **permanece `enabled` mesmo com a impressora Wi-Fi desligada** — por isso o job ficava preso
+  e caía em `ERRO` sem failover. Para filas de rede (`ipp`/`ipps`/`http`/`socket`), o worker
+  resolve o host do device-uri (mDNS `.local` via `getent`/`avahi-resolve-host-name`) e faz um
+  TCP-connect curto à porta IPP (timeout `REACHABILITY_TIMEOUT`, padrão 3 s) **antes** de
+  submeter. Host que não resolve ou porta recusada ⇒ fila **inalcançável** ⇒ pré-submissão ⇒
+  failover seguro para a USB, sem nunca submeter à Wi-Fi. Filas USB/locais (`usb`, `hp:/usb`)
+  não sofrem essa checagem; device-uri não interpretável degrada para o health-check.
 - **Sem failover após a aceitação:** uma vez obtido o job id, o worker **nunca** tenta outra
   fila. Um timeout de conclusão cancela o job e marca `ERRO`. Como o worker materializa N
   cópias no próprio PDF, reimprimir um job já aceito poderia duplicar dezenas de folhas — na
@@ -79,6 +87,7 @@ opcional (`PRINTER_NAME_FALLBACK`). O failover é **restrito à pré-submissão*
 | `POLL_INTERVAL` | não | `10` | Segundos entre consultas à fila. |
 | `PRINT_TIMEOUT` | não | `180` | Segundos de espera pela conclusão do job. |
 | `STUCK_TIMEOUT` | não | `900` | Segundos até re-filar um pedido travado em `IMPRIMINDO`. |
+| `REACHABILITY_TIMEOUT` | não | `3` | Timeout (s) da checagem de alcançabilidade do destino de filas de rede antes de submeter. |
 
 Se faltar uma variável obrigatória, o worker encerra na inicialização com mensagem clara.
 

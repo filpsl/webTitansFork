@@ -17,11 +17,13 @@ import io
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from pypdf import PdfReader, PdfWriter
 from supabase import Client, create_client
@@ -61,6 +63,7 @@ class Config:
         self.poll_interval = int(os.environ.get("POLL_INTERVAL", "10"))
         self.print_timeout = int(os.environ.get("PRINT_TIMEOUT", "180"))
         self.stuck_timeout = int(os.environ.get("STUCK_TIMEOUT", "900"))
+        self.reachability_timeout = int(os.environ.get("REACHABILITY_TIMEOUT", "3"))
 
         missing = [
             name
@@ -189,6 +192,136 @@ def replicar_pdf(pdf_bytes: bytes, copias: int) -> bytes:
     return out.getvalue()
 
 
+# Esquemas de device-uri que apontam para um destino de REDE (alcançabilidade
+# real é verificável por resolução de host + TCP-connect). Filas USB/locais
+# (usb://, hp:/usb/..., file://) não entram aqui: a checagem de rede não se aplica.
+REDE_SCHEMES = {"ipp", "ipps", "http", "https", "socket"}
+PORTA_PADRAO = {"ipp": 631, "ipps": 631, "http": 631, "https": 631, "socket": 9100}
+
+
+def device_uri_da_fila(fila: str) -> str | None:
+    """Retorna o device-uri da fila via `lpstat -v <fila>`, ou None se indisponível.
+
+    Saída típica (locale C): "device for Titans_Laser: ipp://Host.local:631/ipp/print".
+    """
+    try:
+        proc = subprocess.run(
+            ["lpstat", "-v", fila],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=CUPS_ENV,
+        )
+    except Exception as err:  # noqa: BLE001 - timeout/erro => degrada p/ health-check
+        log.warning("Não consegui obter device-uri da fila %s: %s", fila, err)
+        return None
+    if proc.returncode != 0:
+        return None
+    # "device for <fila>: <uri>" — o primeiro ':' encerra o nome da fila.
+    match = re.search(r"device for [^:]+:\s*(\S+)", proc.stdout)
+    return match.group(1) if match else None
+
+
+def parse_device_uri(uri: str) -> tuple[str, str, int] | None:
+    """Extrai (esquema, host, porta) do device-uri; None se não interpretável.
+
+    Porta padrão por esquema (631 IPP/HTTP, 9100 socket). Esquemas sem host de
+    rede (usb://, hp:/usb/...) retornam host vazio e são tratados como não-rede.
+    """
+    try:
+        parsed = urlparse(uri)
+    except Exception:  # noqa: BLE001 - uri malformado => não interpretável
+        return None
+    scheme = (parsed.scheme or "").lower()
+    if not scheme:
+        return None
+    host = parsed.hostname or ""
+    try:
+        porta = parsed.port or PORTA_PADRAO.get(scheme, 631)
+    except ValueError:
+        porta = PORTA_PADRAO.get(scheme, 631)
+    return scheme, host, porta
+
+
+def resolver_host(host: str, timeout: int) -> str | None:
+    """Resolve `host` (mDNS `.local` incluído) para um IP; None se não resolver.
+
+    Tenta `getent hosts` (cobre mDNS quando o nsswitch tem `mdns`) e, se falhar,
+    `avahi-resolve-host-name -4`. Um IP literal passa direto pelo getent.
+    """
+    try:
+        proc = subprocess.run(
+            ["getent", "hosts", host],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=CUPS_ENV,
+        )
+        if proc.returncode == 0 and proc.stdout.split():
+            return proc.stdout.split()[0]
+    except Exception as err:  # noqa: BLE001 - tenta o próximo resolvedor
+        log.debug("getent hosts %s falhou: %s", host, err)
+    try:
+        proc = subprocess.run(
+            ["avahi-resolve-host-name", "-4", host],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=CUPS_ENV,
+        )
+        partes = proc.stdout.split()
+        if proc.returncode == 0 and len(partes) >= 2:
+            return partes[1]
+    except Exception as err:  # noqa: BLE001 - avahi ausente/timeout => não resolve
+        log.debug("avahi-resolve-host-name %s falhou: %s", host, err)
+    return None
+
+
+def fila_alcancavel(cfg: Config, fila: str) -> bool:
+    """Para filas de REDE, prova alcançabilidade real do destino antes de submeter.
+
+    Diferente de `fila_saudavel` (que só vê o estado CUPS `enabled`, o qual
+    permanece `enabled` mesmo com o host Wi-Fi caído), resolve o host do
+    device-uri (mDNS `.local` incluído) e faz um TCP-connect curto à porta do
+    destino. Retorna:
+      - True  para filas USB/locais, filas de rede alcançáveis e também quando o
+        device-uri não é legível/interpretável (degrada com segurança: nunca
+        bloqueia a impressão por falha de parsing);
+      - False só quando a fila é comprovadamente de rede e o host não resolve ou a
+        porta recusa conexão -> classificar como PRÉ-SUBMISSÃO (nada enviado),
+        autorizando o failover seguro para a fila de fallback.
+    """
+    uri = device_uri_da_fila(fila)
+    if not uri:
+        return True  # sem device-uri legível: degrada para o health-check
+    parsed = parse_device_uri(uri)
+    if not parsed:
+        log.debug("Fila %s: device-uri %r não interpretável -> degrada", fila, uri)
+        return True
+    scheme, host, porta = parsed
+    if scheme not in REDE_SCHEMES or not host:
+        return True  # fila USB/local: checagem de rede não se aplica
+    ip = resolver_host(host, cfg.reachability_timeout)
+    if not ip:
+        log.warning(
+            "Fila %s: host %s não resolve (mDNS/DNS) -> destino inalcançável", fila, host
+        )
+        return False
+    try:
+        with socket.create_connection((ip, porta), timeout=cfg.reachability_timeout):
+            log.debug("Fila %s: destino %s:%s alcançável", fila, host, porta)
+            return True
+    except OSError as err:
+        log.warning(
+            "Fila %s: %s:%s não aceita conexão (%s) -> destino inalcançável",
+            fila,
+            host,
+            porta,
+            err,
+        )
+        return False
+
+
 def fila_saudavel(fila: str) -> bool:
     """Best-effort: a fila existe e está habilitada (`enabled`) no CUPS.
 
@@ -308,20 +441,34 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
             fh.write(pdf_para_imprimir)
 
         # Failover restrito à PRÉ-SUBMISSÃO. Tentamos as filas em ordem; uma
-        # falha antes de o CUPS aceitar o job (fila insalubre, lp com erro, ou
-        # job id não extraível) é segura para tentar a próxima. Uma vez aceito o
-        # job, NUNCA tentamos outra fila — o pedido resolve em IMPRESSO ou ERRO
-        # naquela fila, evitando reimpressão duplicada das N cópias.
+        # falha antes de o CUPS aceitar o job (fila insalubre, destino de rede
+        # inalcançável, lp com erro, ou job id não extraível) é segura para
+        # tentar a próxima. Uma vez aceito o job, NUNCA tentamos outra fila — o
+        # pedido resolve em IMPRESSO ou ERRO naquela fila, evitando reimpressão
+        # duplicada das N cópias.
         filas = filas_candidatas(cfg)
         for indice, fila in enumerate(filas):
+            tem_proxima = indice + 1 < len(filas)
             if not fila_saudavel(fila):
                 log.warning(
                     "Pedido %s: fila %s insalubre (health-check) -> %s",
                     pedido_id,
                     fila,
-                    "tentando fallback" if indice + 1 < len(filas) else "sem mais filas",
+                    "tentando fallback" if tem_proxima else "sem mais filas",
                 )
                 continue  # falha de pré-submissão implícita: nada submetido
+
+            # Alcançabilidade real do destino (cobre o host de rede Wi-Fi caído
+            # que o health-check `enabled` não enxerga). Inalcançável = nada foi
+            # enviado à impressora => pré-submissão segura => pode fazer failover.
+            if not fila_alcancavel(cfg, fila):
+                log.warning(
+                    "Pedido %s: fila %s de rede inalcançável (pré-submissão, nada impresso) -> %s",
+                    pedido_id,
+                    fila,
+                    "failover para fallback" if tem_proxima else "sem mais filas",
+                )
+                continue
 
             try:
                 job_id = enviar_para_impressora(fila, caminho)
@@ -331,7 +478,7 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
                     pedido_id,
                     fila,
                     err,
-                    "failover para fallback" if indice + 1 < len(filas) else "sem mais filas",
+                    "failover para fallback" if tem_proxima else "sem mais filas",
                 )
                 continue  # seguro: nada impresso -> próxima fila
 

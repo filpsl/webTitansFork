@@ -7,13 +7,30 @@ reconfere a contagem de páginas, imprime via CUPS e marca o pedido como **IMPRE
 
 Fluxo de status: `PAGO` → `IMPRIMINDO` (claim atômico) → `IMPRESSO` / `ERRO`.
 
+Além da fila, o worker publica um **heartbeat** do estado da impressora na tabela
+`impressora_status` (migrations `0008_kiosk.sql` e `0009_printer_health.sql`),
+consumido pelo totem `/kiosk`: uma thread daemon grava, a cada `POLL_INTERVAL`, o
+estado da fila primária — `OK`, `IMPRIMINDO`, `PAUSADA`, `INALCANCAVEL` ou, via
+leitura IPP (`ipptool`) dos atributos físicos da impressora, `SEM_PAPEL`,
+`SEM_TONER` ou `MANUTENCAO` — usando a mesma `service_role`. Detalhes completos
+(estados, contrato de `detalhes`, retenção de pedidos e aviso via Telegram) na
+seção "Heartbeat e saúde da impressora" abaixo. A escrita é best-effort — se a
+tabela não existir ou o upsert falhar, o worker apenas loga e **continua
+imprimindo normalmente**.
+
 > **NUNCA** commite o `.env` com valores reais. Ele contém a `service_role` key, que
 > dá acesso total ao projeto Supabase. Mantenha-o com permissão `0600`.
 
 ## Pré-requisitos
 
 Antes de tudo, a migration `supabase/migrations/0004_print_worker.sql` precisa ter sido
-rodada no Supabase (adiciona o status `IMPRIMINDO`).
+rodada no Supabase (adiciona o status `IMPRIMINDO`). Para o heartbeat do kiosk, rode
+também `supabase/migrations/0008_kiosk.sql` (cria `impressora_status`) e
+`supabase/migrations/0009_printer_health.sql` (estende o CHECK de `estado` com
+`SEM_PAPEL`/`SEM_TONER`/`MANUTENCAO`). **Aplique a 0009 antes de atualizar o worker**
+para esta versão: sem ela, o upsert do heartbeat falha ao tentar gravar um estado que
+o CHECK ainda não aceita. Sem nenhuma das duas, o worker funciona igual, só logando a
+falha do heartbeat.
 
 Na máquina (Linux):
 
@@ -47,7 +64,18 @@ Na máquina (Linux):
    ```
    Se sair papel **limpo**, o CUPS está ok.
 
-5. **Python 3.10+** disponível.
+5. **(Opcional, recomendado) `cups-ipp-utils` para saúde da impressora.** Fornece
+   o `ipptool`, usado pelo heartbeat para ler `printer-state-reasons` e
+   `marker-levels` (papel, toner, atolamento, tampa) direto da fila IPP — sem IP
+   configurado, sempre a partir do nome da fila. Sem o pacote o worker degrada
+   sozinho: heartbeat só com os estados antigos (`OK`/`PAUSADA`/`INALCANCAVEL`) e
+   a impressão continua normalmente.
+   ```bash
+   sudo apt install cups-ipp-utils
+   which ipptool   # confirma a instalação
+   ```
+
+6. **Python 3.10+** disponível.
 
 ## Instalação do worker
 
@@ -103,6 +131,8 @@ em `IMPRIMINDO` por mais de `STUCK_TIMEOUT` (padrão 15 min) voltam sozinhos par
 | `STUCK_TIMEOUT` | não | `900` | Segundos até re-filar um pedido travado em IMPRIMINDO |
 | `REACHABILITY_TIMEOUT` | não | `3` | Timeout (s) da checagem de alcançabilidade do destino de filas de rede antes de submeter |
 | `LP_OPTIONS` | não | `fit-to-page` | Opções `-o` do `lp` (tokens separados por espaço). Padrão escala à área imprimível e auto-rotaciona paisagem, evitando PDFs deitados cortados. Vazio = sem opções |
+| `TELEGRAM_BOT_TOKEN` | não | — | Token do Bot do Telegram; ativa o aviso de saúde da impressora (mesma env usada por `/api/kiosk/help` no site). Ausente = a transição só é logada, nada quebra |
+| `TELEGRAM_CHAT_ID` | não | — | Chat/grupo do Telegram que recebe o aviso. Ausente = idem acima |
 
 ## Failover entre filas (anti-duplicação)
 
@@ -132,6 +162,76 @@ próprio PDF, reimprimir um job já aceito poderia duplicar **dezenas** de folha
 por isso, na dúvida, o pedido vira `ERRO` para intervenção manual. Sem
 `PRINTER_NAME_FALLBACK`, o worker opera só com a primária, como antes.
 
+## Heartbeat e saúde da impressora
+
+A cada `POLL_INTERVAL`, além do estado básico da fila (`OK`/`IMPRIMINDO`/`PAUSADA`/
+`INALCANCAVEL`, vistos acima), o worker roda o `ipptool` contra a própria fila para
+ler os atributos IPP `printer-state-reasons` e `marker-levels` — nenhum IP
+configurado: o alvo é derivado do nome da fila (`lpstat -v`, com resolução mDNS via
+`getent`/`avahi`), com fallback para a fila CUPS local
+(`ipp://localhost:631/printers/<fila>`). Isso detecta falhas físicas que o
+health-check de fila sozinho não via (papel, toner, atolamento, tampa aberta).
+
+**Estados publicados em `impressora_status.estado`:**
+
+| Estado | Origem | Descrição |
+| --- | --- | --- |
+| `OK` | health-check | Fila saudável e alcançável, sem problema físico. |
+| `IMPRIMINDO` | health-check | Job em andamento (sobrepõe `OK`). |
+| `PAUSADA` | health-check | Fila `disabled` no CUPS. |
+| `INALCANCAVEL` | health-check | Destino de rede não resolve/recusa conexão. |
+| `SEM_PAPEL` | IPP | Razão `media-empty`/`media-needed`. |
+| `SEM_TONER` | IPP | Razão `toner-empty`, ou `marker-levels` ≤ limiar `low` do equipamento (ou 0%). |
+| `MANUTENCAO` | IPP | Razão `media-jam`/`cover-open`/`door-open`. |
+
+Quando várias condições coexistem, a prioridade fixa é **`SEM_TONER` > `SEM_PAPEL` >
+`MANUTENCAO` > `PAUSADA` > `IMPRIMINDO` > `OK`**; `INALCANCAVEL` domina tudo (sem IPP
+confiável, sem dados). Razões IPP desconhecidas não bloqueiam a fila — ficam só em
+`detalhes.state_reasons` para diagnóstico (fail-safe: na dúvida, não bloqueia).
+
+**Contrato de `detalhes` (jsonb):**
+
+```json
+{ "toner_pct": 42, "state_reasons": ["media-empty"], "toner_baixo": false }
+```
+
+- `toner_pct` — percentual de toner relatado por `marker-levels` (`null` se o
+  equipamento não reportar).
+- `state_reasons` — razões IPP normalizadas (sufixos `-report`/`-warning`/`-error`
+  removidos), incluindo as que não mudam o estado.
+- `toner_baixo` — `true` quando `toner_pct` ≤ 10%, **mesmo com `estado = OK`**; é só
+  aviso (a fila continua aceitando/imprimindo), usado pelo kiosk para o selo "Toner
+  acabando".
+
+Sem `ipptool` instalado (ou em timeout/falha na consulta), a coleta degrada sozinha:
+o worker publica só os estados antigos (`OK`/`PAUSADA`/`INALCANCAVEL`) com
+`detalhes` vazio, e **continua imprimindo normalmente** — best-effort, igual ao
+resto do heartbeat.
+
+### Retenção de pedidos em estado bloqueante
+
+Antes de reivindicar o próximo pedido `PAGO`, o worker consulta o estado de saúde
+corrente. Em estado bloqueante — `SEM_PAPEL`, `SEM_TONER`, `MANUTENCAO`, ou
+`INALCANCAVEL` **sem** uma fila de fallback saudável e alcançável — o worker **não
+reivindica**: dorme o ciclo e reavalia no seguinte. O pedido `PAGO` fica intacto na
+fila (**nunca** vira `ERRO`) e, assim que a razão física some, o worker retoma
+sozinho, sem intervenção humana além de repor o insumo. Com uma fila de fallback
+saudável disponível, `INALCANCAVEL` não retém — o failover pré-submissão (seção
+acima) resolve melhor, imprimindo direto na fallback.
+
+### Aviso via Telegram
+
+Opcionalmente, o worker avisa a equipe via Bot API do Telegram (mesmo mecanismo da
+rota `/api/kiosk/help` do site) quando:
+
+- o estado muda **para** `SEM_PAPEL`, `SEM_TONER` ou `MANUTENCAO` — nunca a cada
+  heartbeat, só na transição para o problema;
+- `toner_baixo` passa de `false` para `true`.
+
+Configure `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (ver "Configuração (.env)" acima)
+para habilitar. Sem essas envs, o worker apenas loga a transição e segue
+normalmente — nada quebra.
+
 ## Operação: pedidos em ERRO
 
 O worker marca `status = 'ERRO'` (sem retry automático) quando:
@@ -142,6 +242,12 @@ O worker marca `status = 'ERRO'` (sem retry automático) quando:
 - **nenhuma fila aceita o job** (primária e fallback falham na pré-submissão);
 - a **impressão não conclui** dentro de `PRINT_TIMEOUT` após a aceitação
   (impressora offline, sem papel, atolada) — **sem** failover, para não duplicar.
+
+> Desde a coleta de saúde via IPP ("Heartbeat e saúde da impressora" acima), sem
+> papel/sem toner/atolamento **antes** da reivindicação já são tratados por
+> retenção — o pedido nem chega a ser reivindicado, então não vira `ERRO`. O
+> último bullet acima cobre só o caso residual: a falha física surge **depois**
+> que o job já foi aceito pelo CUPS (ex.: o papel acaba no meio da impressão).
 
 > Se os logs mostram que o job foi **aceito** numa fila mas deu timeout, a folha
 > pode ter saído mesmo assim (falso negativo). Confirme fisicamente: se a

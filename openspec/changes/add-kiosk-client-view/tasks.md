@@ -11,7 +11,7 @@
       adicionar à publicação `supabase_realtime`
 - [x] 1.3 Na mesma migration, criar `chamados_ajuda` (id, protocolo, categoria com
       check, criado_em, resolvido_em) com RLS habilitado e nenhuma policy anon
-- [ ] 1.4 Rodar a migration no Supabase e verificar: SELECT anon na view e em
+- [x] 1.4 Rodar a migration no Supabase e verificar: SELECT anon na view e em
       impressora_status funciona; INSERT anon em chamados_ajuda é negado
 
 ## 2. Worker — heartbeat da impressora
@@ -36,7 +36,7 @@
 - [x] 3.3 Criar `app/api/kiosk/help/route.ts` (POST): valida categoria, aplica
       rate-limit de 5 min por protocolo+categoria, insere em `chamados_ajuda` e dispara
       Telegram Bot API best-effort (falha não bloqueia nem erra a resposta)
-- [ ] 3.4 Documentar `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` no `.env.local.example` e configurar na Vercel
+- [x] 3.4 Documentar `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` no `.env.local.example` e configurar na Vercel
 
 ## 4. Kiosk — dados e tela principal
 
@@ -69,7 +69,7 @@
 
 ## 6. Verificação e provisionamento
 
-- [ ] 6.1 Verificação end-to-end em resolução da tela touch: criar pedido de teste,
+- [x] 6.1 Verificação end-to-end em resolução da tela touch: criar pedido de teste,
       acompanhar PAGO→IMPRIMINDO→IMPRESSO no kiosk, consultar protocolo na ajuda e
       registrar um chamado (conferir linha na tabela e webhook)
 - [x] 6.2 Escrever `docs/web-to-print/kiosk.md`: Chromium --kiosk no Wayland/labwc,

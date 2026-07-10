@@ -6,7 +6,7 @@
       `add constraint` no CHECK de `impressora_status.estado`, estendendo a lista para incluir
       `SEM_PAPEL`, `SEM_TONER` e `MANUTENCAO` (sem novas tabelas/colunas/policies), com
       comentário explicando o rollback (restaurar o CHECK antigo após normalizar linhas)
-- [ ] 1.2 Rodar a migração no Supabase e verificar: upsert com `estado = 'SEM_PAPEL'` é
+- [x] 1.2 Rodar a migração no Supabase e verificar: upsert com `estado = 'SEM_PAPEL'` é
       aceito; RLS inalterada (anon SELECT funciona, escrita anônima negada)
 
 ## 2. Worker — coleta IPP de saúde
@@ -68,6 +68,6 @@
       (`ipptool`), novos estados/`detalhes`, e envs `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`
 - [x] 7.2 Atualizar `docs/web-to-print/kiosk.md`: novos estados exibidos na faixa e o aviso de
       toner baixo
-- [ ] 7.3 Verificação com a impressora real (HP Laser 135w, fila `Titans_Laser`): tirar papel
+- [x] 7.3 Verificação com a impressora real (HP Laser 135w, fila `Titans_Laser`): tirar papel
       da bandeja e observar o kiosk mudar para `SEM_PAPEL` e o alerta chegar no Telegram; repor
       e confirmar que um pedido `PAGO` pendente imprime sozinho; conferir `toner_pct` reportado

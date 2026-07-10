@@ -1,5 +1,8 @@
 import type { ModoCor, StatusPedido } from "@/lib/types";
-import type { EstadoImpressora } from "@/hooks/useImpressoraStatus";
+
+// Lógica de estado da impressora compartilhada com /impressao vive em
+// @/lib/impressora; reexportada aqui para manter os imports do kiosk estáveis.
+export { faixaImpressora, type FaixaImpressora } from "@/lib/impressora";
 
 export function rotuloModoCor(modo: ModoCor): string {
   return modo === "PB" ? "P&B" : "Colorido";
@@ -60,69 +63,3 @@ export function statusVisualFila(status: StatusPedido): StatusVisual {
   }
 }
 
-export type FaixaImpressora = {
-  texto: string;
-  // Cor da faixa de estado da impressora.
-  classe: string;
-  ativa: boolean; // impressora efetivamente imprimindo (usado para animação)
-};
-
-// Texto amigável + cor da faixa de estado da impressora. `offline` tem prioridade
-// sobre o estado gravado (worker/Pi caiu).
-export function faixaImpressora(
-  estado: EstadoImpressora | null,
-  offline: boolean
-): FaixaImpressora {
-  if (offline) {
-    return {
-      texto: "Sistema de impressão offline",
-      classe: "bg-red-500/15 text-red-300 border-red-500/30",
-      ativa: false,
-    };
-  }
-  switch (estado) {
-    case "IMPRIMINDO":
-      return {
-        texto: "Imprimindo…",
-        classe: "bg-titans-orange/15 text-titans-orange border-titans-orange/30",
-        ativa: true,
-      };
-    case "PAUSADA":
-      return {
-        texto: "Impressora pausada",
-        classe: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-        ativa: false,
-      };
-    case "INALCANCAVEL":
-      return {
-        texto: "Impressora indisponível — equipe avisada",
-        classe: "bg-red-500/15 text-red-300 border-red-500/30",
-        ativa: false,
-      };
-    case "SEM_PAPEL":
-      return {
-        texto: "Sem papel — a equipe já foi avisada",
-        classe: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-        ativa: false,
-      };
-    case "SEM_TONER":
-      return {
-        texto: "Toner esgotado — a equipe já foi avisada",
-        classe: "bg-red-500/15 text-red-300 border-red-500/30",
-        ativa: false,
-      };
-    case "MANUTENCAO":
-      return {
-        texto: "Impressora em manutenção — a equipe já foi avisada",
-        classe: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-        ativa: false,
-      };
-    case "OK":
-    default:
-      return {
-        texto: "Impressora pronta",
-        classe: "bg-green-500/15 text-green-300 border-green-500/30",
-        ativa: false,
-      };
-  }
-}

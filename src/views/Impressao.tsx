@@ -14,6 +14,7 @@ import { ConfiguracaoImpressao } from "@/components/impressao/ConfiguracaoImpres
 import { TelaPagamento } from "@/components/impressao/TelaPagamento";
 import { TelaSucesso } from "@/components/impressao/TelaSucesso";
 import { BotaoOndeRetirar } from "@/components/impressao/BotaoOndeRetirar";
+import { StatusImpressora } from "@/components/impressao/StatusImpressora";
 import { supabase } from "@/lib/supabase";
 import type { ModoCor } from "@/lib/types";
 
@@ -102,13 +103,17 @@ const Impressao = () => {
       <section className="pt-24 pb-12">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-2xl mx-auto">
-            <Link
-              href="/"
-              className="inline-flex items-center text-muted-foreground hover:text-foreground mb-6 transition-colors"
-            >
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Voltar ao início
-            </Link>
+            {/* O Link precisa de linha própria: como elemento inline, dividiria
+                a linha com o Badge e os textos se sobreporiam. */}
+            <div className="mb-6">
+              <Link
+                href="/"
+                className="inline-flex items-center text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Voltar ao início
+              </Link>
+            </div>
 
             <Badge className="mb-4 bg-gradient-to-r from-titans-red to-titans-orange text-white">
               Serviço de Impressão
@@ -121,6 +126,8 @@ const Impressao = () => {
             <p className="text-muted-foreground mb-4">
               Envie o arquivo, escolha cor ou preto-e-branco, pague via PIX e retire na sede.
             </p>
+
+            <StatusImpressora className="mb-4" />
 
             <BotaoOndeRetirar className="mb-8" />
 

@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Delete, AlertTriangle, CheckCircle2 } from "lucide-react";
 import type { StatusPedido } from "@/lib/types";
 import { KioskOverlay } from "./KioskOverlay";
-import { formatarHorario } from "./status";
+import { formatarHorario, formatarDataRelativa } from "./status";
+import { KioskQRCode } from "./KioskQRCode";
 
 type Props = {
   onClose: () => void;
@@ -39,6 +40,23 @@ const TECLAS_HEX = [
   "D", "E", "F", "0",
 ];
 
+// Convite do grupo de ajuda dos clientes no Telegram. Público por natureza
+// (qualquer um com o link entra); inlinado no bundle pelo Next em build. Vazio/
+// ausente esconde o botão do Telegram no overlay.
+const TELEGRAM_HELP_INVITE_URL = process.env.NEXT_PUBLIC_TELEGRAM_HELP_INVITE_URL;
+
+// Frase "Impresso [hoje/ontem/em dd/MM] às HH:MM." a partir de printed_at.
+// Sem printed_at cai para "Impresso." — texto que ainda faz sentido no detalhe.
+function textoImpressao(printedAt: string | null): string {
+  const horario = formatarHorario(printedAt);
+  if (!horario) return "Impresso";
+
+  const dia = formatarDataRelativa(printedAt);
+  if (dia === "hoje") return `Impresso hoje às ${horario}`;
+  if (dia === "ontem") return `Impresso ontem às ${horario}`;
+  return `Impresso em ${dia} às ${horario}`;
+}
+
 // Orientação amigável por status do pedido (spec kiosk-help-requests).
 function orientacao(dados: ConsultaResposta): {
   titulo: string;
@@ -70,7 +88,7 @@ function orientacao(dados: ConsultaResposta): {
     case "IMPRESSO":
       return {
         titulo: "Pronto para retirada",
-        detalhe: `Impresso às ${formatarHorario(dados.printed_at)}. Pode retirar na sede.`,
+        detalhe: `${textoImpressao(dados.printed_at)}. Pode retirar na sede.`,
         chamarEmDestaque: false,
       };
     case "ERRO":
@@ -91,8 +109,12 @@ export function OverlayAjuda({ onClose }: Props) {
   const [chamado, setChamado] = useState<"idle" | "enviando" | "ok" | "erro">(
     "idle"
   );
+  // Painel do QR do Telegram — estado interno do overlay (não um segundo
+  // overlay: a spec do kiosk exige um overlay por vez).
+  const [telegramAberto, setTelegramAberto] = useState(false);
 
   const completo = codigo.length === 8;
+  const telegramDisponivel = Boolean(TELEGRAM_HELP_INVITE_URL);
 
   function adicionar(char: string) {
     if (codigo.length >= 8) return;
@@ -159,6 +181,14 @@ export function OverlayAjuda({ onClose }: Props) {
     if (consulta.fase === "digitando" || consulta.fase === "consultando") return;
     resultadoRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [consulta.fase]);
+
+  // O painel do Telegram nasce no fim do overlay, abaixo da dobra em telas
+  // baixas — rola até ele ao abrir, seguindo o padrão do resultado da consulta.
+  const telegramRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!telegramAberto) return;
+    telegramRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [telegramAberto]);
 
   // Visor fixo fora da área rolável: continua visível enquanto o cliente
   // digita mesmo quando o teclado força rolagem em telas baixas (1024×600).
@@ -287,6 +317,41 @@ export function OverlayAjuda({ onClose }: Props) {
           </>
         )}
       </div>
+
+      {/* Falar com a equipe no Telegram — só quando o convite está configurado. */}
+      {telegramDisponivel && TELEGRAM_HELP_INVITE_URL && (
+        <div className="mt-8 border-t border-white/10 pt-6" ref={telegramRef}>
+          <button
+            type="button"
+            onClick={() => setTelegramAberto((aberto) => !aberto)}
+            className="min-h-[56px] w-full rounded-xl border border-white/15 bg-white/5 px-5 text-xl font-semibold text-white transition active:scale-95"
+          >
+            Falar com a equipe no Telegram
+          </button>
+
+          {telegramAberto && (
+            <div className="mt-4 flex flex-col items-center rounded-2xl border border-white/10 bg-white/5 p-6">
+              <KioskQRCode url={TELEGRAM_HELP_INVITE_URL} size={200} />
+
+              {completo ? (
+                <div className="mt-5 w-full text-center">
+                  <p className="text-lg text-zinc-300">
+                    Ao entrar no grupo, envie este protocolo:
+                  </p>
+                  <p className="mt-2 font-mono text-4xl font-bold tracking-[0.3em] text-white">
+                    {codigo}
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-5 text-center text-lg text-zinc-300">
+                  Ao entrar, conte seu problema e, se tiver, informe o protocolo
+                  do pedido.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </KioskOverlay>
   );
 }

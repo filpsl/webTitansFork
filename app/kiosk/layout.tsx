@@ -5,7 +5,8 @@ export const metadata: Metadata = {
 };
 
 // Layout próprio do totem (Sala 208): tela cheia, fundo escuro, sem Header/Footer,
-// otimizado para toque (cursor oculto, sem gesto de zoom/scroll horizontal).
+// otimizado para toque (sem gesto de zoom/scroll horizontal). O cursor fica
+// visível: o totem atual é um computador operado com mouse.
 export default function KioskLayout({
   children,
 }: {
@@ -14,7 +15,7 @@ export default function KioskLayout({
   return (
     <div
       className="dark fixed inset-0 overflow-hidden overscroll-none bg-zinc-950 text-white select-none"
-      style={{ cursor: "none", touchAction: "manipulation" }}
+      style={{ touchAction: "manipulation" }}
     >
       {/* Keyframes usados só no kiosk (evita tocar no tailwind.config global). */}
       <style>{`

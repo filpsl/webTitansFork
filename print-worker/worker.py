@@ -369,7 +369,10 @@ def estado_da_fila(cfg: Config, fila: str) -> str:
       firmware não está pronto (stopped/sem estado IPP legível na janela de
       boot) — assim a retenção segura os pedidos em PAGO até o idle, em vez de
       reivindicar e falhar. `processing` NÃO bloqueia: é o job do próprio
-      worker, e o heartbeat precisa publicar IMPRIMINDO, não INALCANCAVEL;
+      worker, e o heartbeat precisa publicar IMPRIMINDO, não INALCANCAVEL.
+      Atenção: `stopped` também é como o firmware apresenta falta de papel/
+      toner/atolamento com job bloqueado — `saude_da_impressora` reexamina o
+      INALCANCAVEL via IPP direto antes de publicá-lo;
     - OK: fila habilitada, destino alcançável e firmware pronto.
     """
     try:
@@ -561,6 +564,19 @@ def coletar_saude_ipp(cfg: Config, fila: str) -> dict | None:
     return None
 
 
+def saude_ipp_direta(cfg: Config, fila: str) -> dict | None:
+    """Atributos de saúde lidos SÓ do equipamento (sem fallback à fila local).
+
+    Usada quando os health-checks dizem INALCANCAVEL: a fila CUPS local
+    responde mesmo com a impressora desligada (estado em cache), então razões
+    vindas dela não provam nada — só a resposta do próprio equipamento vale.
+    """
+    alvo = alvo_ipp_da_fila(fila)
+    if alvo == f"ipp://localhost:631/printers/{fila}":
+        return None
+    return _consultar_ipp(cfg, _uri_com_host_resolvido(cfg, alvo))
+
+
 # Sentinelas de _printer_state_equipamento para os casos sem enum legível.
 SEM_ESTADO = "SEM_ESTADO"
 NAO_CONSULTAVEL = "NAO_CONSULTAVEL"
@@ -641,20 +657,8 @@ def estado_de_saude(
     return None
 
 
-def saude_da_impressora(cfg: Config, fila: str) -> tuple[str, dict]:
-    """Estado do heartbeat + `detalhes`, combinando health-checks e IPP.
-
-    INALCANCAVEL domina (sem IPP não há razões confiáveis). Entre os demais,
-    a prioridade é SEM_TONER > SEM_PAPEL > MANUTENCAO > PAUSADA > OK — falha
-    física vence PAUSADA porque exige reposição/ação na impressora. Sem coleta
-    IPP (best-effort), degrada para o estado dos health-checks, detalhes vazios.
-    """
-    estado = estado_da_fila(cfg, fila)
-    if estado == "INALCANCAVEL":
-        return estado, {}
-    saude = coletar_saude_ipp(cfg, fila)
-    if saude is None:
-        return estado, {}
+def derivar_fisico(saude: dict) -> tuple[str | None, dict]:
+    """Estado físico (ou None) + `detalhes` a partir dos atributos IPP coletados."""
     razoes = normalizar_razoes(saude["state_reasons"])
     toner_pct = saude["toner_pct"]
     fisico = estado_de_saude(razoes, toner_pct, saude["toner_low_pct"])
@@ -663,6 +667,36 @@ def saude_da_impressora(cfg: Config, fila: str) -> tuple[str, dict]:
         "state_reasons": razoes,
         "toner_baixo": toner_pct is not None and toner_pct <= TONER_BAIXO_PCT,
     }
+    return fisico, detalhes
+
+
+def saude_da_impressora(cfg: Config, fila: str) -> tuple[str, dict]:
+    """Estado do heartbeat + `detalhes`, combinando health-checks e IPP.
+
+    INALCANCAVEL dos health-checks NÃO é definitivo: `printer-state = stopped`
+    também cai nele (regra da janela de boot), e é exatamente como o firmware
+    apresenta "parada por falta de papel/toner/atolamento" com job bloqueado.
+    Por isso, antes de publicar INALCANCAVEL, consultamos o equipamento DIRETO
+    (sem o cache da fila local): se ele responde e as razões mapeiam para uma
+    falha física, publicamos a falha física — senão, INALCANCAVEL fica (a
+    impressora está mesmo fora do ar ou em boot). Entre os demais estados, a
+    prioridade é SEM_TONER > SEM_PAPEL > MANUTENCAO > PAUSADA > OK — falha
+    física vence PAUSADA porque exige reposição/ação na impressora. Sem coleta
+    IPP (best-effort), degrada para o estado dos health-checks, detalhes vazios.
+    """
+    estado = estado_da_fila(cfg, fila)
+    if estado == "INALCANCAVEL":
+        saude = saude_ipp_direta(cfg, fila)
+        if saude is None:
+            return estado, {}
+        fisico, detalhes = derivar_fisico(saude)
+        if fisico is None:
+            return estado, {}
+        return fisico, detalhes
+    saude = coletar_saude_ipp(cfg, fila)
+    if saude is None:
+        return estado, {}
+    fisico, detalhes = derivar_fisico(saude)
     return fisico or estado, detalhes
 
 
@@ -670,39 +704,66 @@ def saude_da_impressora(cfg: Config, fila: str) -> tuple[str, dict]:
 # fora: oscilam com Wi-Fi/ação humana deliberada e virariam ruído no Telegram.
 ESTADOS_NOTIFICAVEIS = {"SEM_PAPEL", "SEM_TONER", "MANUTENCAO"}
 
+# Estados que provam a impressora operando — só eles encerram um problema
+# pendente com o aviso de recuperação (INALCANCAVEL/PAUSADA não provam reposição).
+ESTADOS_OPERANTES = {"OK", "IMPRIMINDO"}
+
 MENSAGEM_ESTADO = {
     "SEM_PAPEL": "🟡 Sem papel na bandeja — repor para a fila andar.",
     "SEM_TONER": "🔴 Toner esgotado — trocar o cartucho.",
     "MANUTENCAO": "🟠 Impressora precisa de atenção (atolamento ou tampa aberta).",
 }
 
+MENSAGEM_RECUPERACAO = {
+    "SEM_PAPEL": "🟢 Papel reposto — impressora pronta e fila retomada.",
+    "SEM_TONER": "🟢 Toner reposto — impressora pronta e fila retomada.",
+    "MANUTENCAO": "🟢 Impressora normalizada — fila retomada.",
+}
 
-def notificar_transicao(
-    cfg: Config,
+
+def linhas_de_transicao(
     estado_antigo: str | None,
     estado_novo: str,
+    problema_pendente: str | None,
     toner_baixo_antigo: bool,
     toner_baixo_novo: bool,
-) -> None:
-    """Avisa a equipe (Telegram) só na ENTRADA de um problema — nunca por heartbeat.
+) -> tuple[list[str], str | None]:
+    """Mensagens a enviar nesta transição + novo problema pendente (função pura).
 
-    Dispara quando o estado muda para um dos ESTADOS_NOTIFICAVEIS ou quando
-    `toner_baixo` vai de False para True. Best-effort: envs ausentes ou falha
-    de rede apenas logam; o heartbeat e a impressão nunca são afetados.
+    - ENTRADA em problema notificável: avisa e registra o problema como
+      pendente. A reentrada do MESMO problema ainda pendente (ex.: SEM_PAPEL ->
+      INALCANCAVEL -> SEM_PAPEL num blip de rede, sem reposição no meio) não
+      repete o aviso.
+    - RECUPERAÇÃO: ao voltar a operar (OK/IMPRIMINDO) com problema pendente,
+      avisa que foi resolvido — a equipe sabe da reposição sem ir ao local.
+    - Toner baixo: aviso ortogonal na subida False -> True, como antes.
+
+    Nunca dispara por heartbeat repetido de um mesmo estado.
     """
-    linhas = []
-    if estado_novo in ESTADOS_NOTIFICAVEIS and estado_novo != estado_antigo:
-        linhas.append(MENSAGEM_ESTADO[estado_novo])
+    linhas: list[str] = []
+    pendente = problema_pendente
+    if estado_novo in ESTADOS_NOTIFICAVEIS:
+        if estado_novo != estado_antigo and estado_novo != problema_pendente:
+            linhas.append(MENSAGEM_ESTADO[estado_novo])
+        pendente = estado_novo
+    elif estado_novo in ESTADOS_OPERANTES and problema_pendente is not None:
+        linhas.append(MENSAGEM_RECUPERACAO[problema_pendente])
+        pendente = None
     if toner_baixo_novo and not toner_baixo_antigo:
         linhas.append(f"🟡 Toner acabando (≤ {TONER_BAIXO_PCT}%) — providenciar reposição.")
+    return linhas, pendente
+
+
+def enviar_aviso_telegram(cfg: Config, linhas: list[str]) -> None:
+    """Envia o aviso de saúde à equipe via Telegram Bot API.
+
+    Best-effort: envs ausentes ou falha de rede apenas logam; o heartbeat e a
+    impressão nunca são afetados.
+    """
     if not linhas:
         return
     if not cfg.telegram_bot_token or not cfg.telegram_chat_id:
-        log.info(
-            "Transição de saúde (%s -> %s) sem Telegram configurado — aviso pulado",
-            estado_antigo,
-            estado_novo,
-        )
+        log.info("Aviso de saúde sem Telegram configurado — pulado: %s", " / ".join(linhas))
         return
     texto = "🖨️ Impressora do totem\n" + "\n".join(linhas) + f"\nFila: {cfg.printer_name}"
     try:
@@ -767,9 +828,39 @@ class Heartbeat:
         # None = nenhuma leitura ainda (worker recém-iniciado).
         self.estado_saude: str | None = None
         # Memória de transição para a notificação (só do que foi PUBLICADO com
-        # sucesso — a fonte da verdade é o que o kiosk vê).
+        # sucesso — a fonte da verdade é o que o kiosk vê). `_problema_pendente`
+        # é o problema já avisado e ainda não resolvido: dedup da reentrada e
+        # gatilho do aviso de recuperação quando a impressora volta a operar.
         self._ultimo_publicado: str | None = None
         self._ultimo_toner_baixo = False
+        self._problema_pendente: str | None = None
+        self._semear_memoria()
+
+    def _semear_memoria(self) -> None:
+        """Continua a memória de transição da última linha publicada (best-effort).
+
+        Sem isso, todo restart do worker re-avisaria um problema já notificado
+        (None -> SEM_PAPEL) e esqueceria a recuperação pendente de antes do
+        restart — a reposição do papel ficaria sem aviso.
+        """
+        try:
+            res = (
+                self._sb.table("impressora_status")
+                .select("estado, detalhes")
+                .limit(1)
+                .execute()
+            )
+            row = res.data[0] if res.data else None
+        except Exception as err:  # noqa: BLE001 - best-effort: memória zerada
+            log.warning("Heartbeat: leitura inicial de impressora_status falhou: %s", err)
+            return
+        if not row:
+            return
+        estado = row.get("estado")
+        self._ultimo_publicado = estado
+        if estado in ESTADOS_NOTIFICAVEIS:
+            self._problema_pendente = estado
+        self._ultimo_toner_baixo = bool((row.get("detalhes") or {}).get("toner_baixo"))
 
     def marcar_imprimindo(self, ativo: bool) -> None:
         if ativo:
@@ -783,7 +874,11 @@ class Heartbeat:
         # IMPRIMINDO só sobrepõe OK: uma falha física detectada no meio de um
         # job (ex.: papel acabou) tem prioridade na faixa do kiosk.
         publicado = "IMPRIMINDO" if estado == "OK" and self._imprimindo.is_set() else estado
-        toner_baixo = bool(detalhes.get("toner_baixo"))
+        # Sem coleta IPP (detalhes vazios, ex.: INALCANCAVEL) não há leitura de
+        # toner — manter a memória evita re-avisar "toner acabando" a cada blip.
+        toner_baixo = (
+            bool(detalhes.get("toner_baixo")) if detalhes else self._ultimo_toner_baixo
+        )
         try:
             self._sb.table("impressora_status").upsert(
                 {
@@ -796,15 +891,17 @@ class Heartbeat:
         except Exception as err:  # noqa: BLE001 - best-effort: nunca derruba o worker
             log.warning("Heartbeat: upsert em impressora_status falhou: %s", err)
             return
-        notificar_transicao(
-            self._cfg,
+        linhas, problema_pendente = linhas_de_transicao(
             self._ultimo_publicado,
             publicado,
+            self._problema_pendente,
             self._ultimo_toner_baixo,
             toner_baixo,
         )
+        enviar_aviso_telegram(self._cfg, linhas)
         self._ultimo_publicado = publicado
         self._ultimo_toner_baixo = toner_baixo
+        self._problema_pendente = problema_pendente
 
     def _loop(self) -> None:
         while True:

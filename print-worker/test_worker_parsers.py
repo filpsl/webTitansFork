@@ -159,5 +159,85 @@ class EstadoDeSaudeTests(unittest.TestCase):
         self.assertEqual(worker.estado_de_saude([], 5, 10), "SEM_TONER")
 
 
+class LinhasDeTransicaoTests(unittest.TestCase):
+    """`linhas_de_transicao`: avisos de entrada em problema e de recuperação."""
+
+    def test_entrada_em_sem_papel_notifica_e_registra_pendente(self) -> None:
+        linhas, pendente = worker.linhas_de_transicao("OK", "SEM_PAPEL", None, False, False)
+        self.assertEqual(linhas, [worker.MENSAGEM_ESTADO["SEM_PAPEL"]])
+        self.assertEqual(pendente, "SEM_PAPEL")
+
+    def test_heartbeat_repetido_do_mesmo_estado_nao_repete(self) -> None:
+        linhas, pendente = worker.linhas_de_transicao(
+            "SEM_PAPEL", "SEM_PAPEL", "SEM_PAPEL", False, False
+        )
+        self.assertEqual(linhas, [])
+        self.assertEqual(pendente, "SEM_PAPEL")
+
+    def test_reentrada_apos_blip_inalcancavel_nao_repete(self) -> None:
+        """SEM_PAPEL -> INALCANCAVEL -> SEM_PAPEL (Wi-Fi caiu e voltou, papel
+        continua em falta): o problema pendente deduplica o aviso."""
+        linhas, pendente = worker.linhas_de_transicao(
+            "INALCANCAVEL", "SEM_PAPEL", "SEM_PAPEL", False, False
+        )
+        self.assertEqual(linhas, [])
+        self.assertEqual(pendente, "SEM_PAPEL")
+
+    def test_recuperacao_para_ok_avisa_papel_reposto(self) -> None:
+        linhas, pendente = worker.linhas_de_transicao(
+            "SEM_PAPEL", "OK", "SEM_PAPEL", False, False
+        )
+        self.assertEqual(linhas, [worker.MENSAGEM_RECUPERACAO["SEM_PAPEL"]])
+        self.assertIsNone(pendente)
+
+    def test_recuperacao_para_imprimindo_tambem_conta(self) -> None:
+        linhas, pendente = worker.linhas_de_transicao(
+            "SEM_TONER", "IMPRIMINDO", "SEM_TONER", False, False
+        )
+        self.assertEqual(linhas, [worker.MENSAGEM_RECUPERACAO["SEM_TONER"]])
+        self.assertIsNone(pendente)
+
+    def test_inalcancavel_nao_encerra_problema_pendente(self) -> None:
+        """Impressora desligada não prova reposição: pendente sobrevive."""
+        linhas, pendente = worker.linhas_de_transicao(
+            "SEM_PAPEL", "INALCANCAVEL", "SEM_PAPEL", False, False
+        )
+        self.assertEqual(linhas, [])
+        self.assertEqual(pendente, "SEM_PAPEL")
+
+    def test_pausada_nao_encerra_problema_pendente(self) -> None:
+        linhas, pendente = worker.linhas_de_transicao(
+            "SEM_PAPEL", "PAUSADA", "SEM_PAPEL", False, False
+        )
+        self.assertEqual(linhas, [])
+        self.assertEqual(pendente, "SEM_PAPEL")
+
+    def test_troca_de_problema_notifica_o_novo(self) -> None:
+        linhas, pendente = worker.linhas_de_transicao(
+            "SEM_PAPEL", "SEM_TONER", "SEM_PAPEL", False, False
+        )
+        self.assertEqual(linhas, [worker.MENSAGEM_ESTADO["SEM_TONER"]])
+        self.assertEqual(pendente, "SEM_TONER")
+
+    def test_ok_sem_problema_pendente_nao_avisa(self) -> None:
+        linhas, pendente = worker.linhas_de_transicao("OK", "OK", None, False, False)
+        self.assertEqual(linhas, [])
+        self.assertIsNone(pendente)
+
+    def test_toner_baixo_subindo_avisa_uma_vez(self) -> None:
+        linhas, _ = worker.linhas_de_transicao("OK", "OK", None, False, True)
+        self.assertEqual(len(linhas), 1)
+        self.assertIn("Toner acabando", linhas[0])
+        linhas, _ = worker.linhas_de_transicao("OK", "OK", None, True, True)
+        self.assertEqual(linhas, [])
+
+    def test_entrada_em_problema_com_toner_baixo_junta_as_linhas(self) -> None:
+        linhas, pendente = worker.linhas_de_transicao("OK", "SEM_PAPEL", None, False, True)
+        self.assertEqual(len(linhas), 2)
+        self.assertEqual(linhas[0], worker.MENSAGEM_ESTADO["SEM_PAPEL"])
+        self.assertIn("Toner acabando", linhas[1])
+        self.assertEqual(pendente, "SEM_PAPEL")
+
+
 if __name__ == "__main__":
     unittest.main()

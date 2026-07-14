@@ -28,8 +28,12 @@ O worker SHALL mapear as razões IPP para os estados `SEM_PAPEL` (media-empty/me
 `SEM_TONER` (toner-empty ou nível de toner no limiar low) e `MANUTENCAO`
 (media-jam/cover-open/door-open), publicados em `impressora_status.estado`. Quando múltiplas
 razões coexistirem, o estado publicado MUST seguir a prioridade
-`SEM_TONER > SEM_PAPEL > MANUTENCAO > PAUSADA > IMPRIMINDO > OK`. `INALCANCAVEL` (destino sem
-resposta) MUST dominar, pois sem IPP não há razões confiáveis. Toner baixo (nível ≤ 10%, acima
+`SEM_TONER > SEM_PAPEL > MANUTENCAO > PAUSADA > IMPRIMINDO > OK`. `INALCANCAVEL` SHALL ser
+publicado somente quando o equipamento realmente não responde à consulta IPP direta (sem o
+cache da fila CUPS local): se os health-checks indicam indisponibilidade (ex.:
+`printer-state = stopped`, que o firmware também usa para falha física com job bloqueado) mas
+o equipamento responde IPP com razões que mapeiam para falha física, o estado físico MUST
+prevalecer. Toner baixo (nível ≤ 10%, acima
 do limiar de `SEM_TONER`) MUST NOT alterar o `estado`: SHALL apenas marcar
 `detalhes.toner_baixo = true`. Razões IPP desconhecidas MUST NOT bloquear a fila — são
 registradas em `detalhes.state_reasons` sem mudar o estado.
@@ -64,16 +68,36 @@ automaticamente no ciclo seguinte, sem intervenção manual além da reposição
 
 ### Requirement: Notificação da equipe por transição de estado
 O worker SHALL notificar a equipe via Telegram Bot API (envs `TELEGRAM_BOT_TOKEN` e
-`TELEGRAM_CHAT_ID`) APENAS quando o estado publicado transiciona para um estado de problema
-(ex.: `OK → SEM_PAPEL`) e quando `detalhes.toner_baixo` passa de `false` para `true`. A
-notificação MUST NOT ser enviada a cada heartbeat de um mesmo estado (sem spam). O envio MUST
-ser best-effort: falha ou envs ausentes são logadas e MUST NOT interromper o heartbeat nem o
-ciclo de impressão.
+`TELEGRAM_CHAT_ID`) APENAS nestas transições: quando o estado publicado ENTRA em um estado de
+problema (ex.: `OK → SEM_PAPEL`); quando um problema já avisado é RESOLVIDO — o estado volta a
+operar (`OK`/`IMPRIMINDO`) — com uma mensagem de recuperação (ex.: papel reposto); e quando
+`detalhes.toner_baixo` passa de `false` para `true`. A notificação MUST NOT ser enviada a cada
+heartbeat de um mesmo estado (sem spam), e a reentrada no MESMO problema ainda pendente (ex.:
+`SEM_PAPEL → INALCANCAVEL → SEM_PAPEL` por queda de rede, sem reposição no meio) MUST NOT
+repetir o aviso. `INALCANCAVEL`/`PAUSADA` MUST NOT contar como resolução (não provam
+reposição). Ao iniciar, o worker SHALL continuar a memória de transição a partir da última
+linha publicada em `impressora_status`, para que um restart não duplique avisos nem perca a
+recuperação pendente. O envio MUST ser best-effort: falha ou envs ausentes são logadas e MUST
+NOT interromper o heartbeat nem o ciclo de impressão.
 
 #### Scenario: Transição para sem papel notifica uma vez
 - **WHEN** o estado muda de `OK` para `SEM_PAPEL`
 - **THEN** uma mensagem é enviada ao Telegram e ciclos subsequentes ainda em `SEM_PAPEL` não
   enviam novas mensagens
+
+#### Scenario: Reposição do papel notifica a recuperação
+- **WHEN** o estado estava em `SEM_PAPEL` (problema avisado) e volta a `OK` ou `IMPRIMINDO`
+- **THEN** uma mensagem de recuperação (papel reposto, fila retomada) é enviada ao Telegram e o
+  problema deixa de estar pendente
+
+#### Scenario: Queda de rede no meio do problema não gera ruído
+- **WHEN** o estado vai de `SEM_PAPEL` para `INALCANCAVEL` e retorna a `SEM_PAPEL` sem reposição
+- **THEN** nenhuma mensagem adicional é enviada (nem de recuperação, nem de reentrada)
+
+#### Scenario: Sem papel com job bloqueado (printer-state stopped)
+- **WHEN** o firmware reporta `printer-state = stopped` com razão `media-empty` e o equipamento
+  responde à consulta IPP direta
+- **THEN** o worker publica `SEM_PAPEL` (não `INALCANCAVEL`) e a notificação de entrada dispara
 
 #### Scenario: Telegram não configurado
 - **WHEN** ocorre uma transição de estado e as envs do Telegram não estão definidas

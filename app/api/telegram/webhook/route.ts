@@ -140,11 +140,11 @@ async function tratarGerarCodigo(chatId: number, argumento: string, adminId: num
     chatId: String(chatId),
     texto:
       `🔑 Código de reimpressão: ${codigo}\n` +
-      `Válido por ${JANELA_EXPIRACAO_HORAS}h, uso único. \n\n ` + 
-      `Cliente: Clique no botão de "Ajuda", role a tela que abrir ` +
+      `Válido por ${JANELA_EXPIRACAO_HORAS}h, uso único. \n\n` + 
+      `Cliente:\nClique no botão de "Ajuda", role a tela que abrir ` +
       `para baixo, clique em "Tenho um código de reimpressão" ` +
-      `e preencha os campos corretamente. \n\n ` + 
-      `Protocolo: ${protocolo}\n Código: ${codigo} ` + 
+      `e preencha os campos corretamente. \n\n` + 
+      `Protocolo: ${protocolo}\nCódigo: ${codigo}\n` + 
       `Após isso, a reimpressão deve ser feita.`,
   });
 }

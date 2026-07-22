@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Delete, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Delete, AlertTriangle, CheckCircle2, KeyRound } from "lucide-react";
 import type { StatusPedido } from "@/lib/types";
 import { KioskOverlay } from "./KioskOverlay";
 import { formatarHorario, formatarDataRelativa } from "./status";
@@ -26,6 +26,16 @@ type EstadoConsulta =
   | { fase: "erro" };
 
 type CategoriaChamado = "NAO_SAIU" | "SAIU_COM_DEFEITO" | "OUTRO";
+
+// Resgate do código de reimpressão (fluxo B, spec kiosk-help-requests): campo
+// separado do teclado de protocolo da consulta acima, endpoint dedicado.
+type CampoReimpressao = "protocolo" | "codigo";
+type EstadoReimpressao =
+  | { fase: "idle" }
+  | { fase: "enviando" }
+  | { fase: "sucesso"; posicaoNaFila: number | null }
+  | { fase: "erro" }
+  | { fase: "limite" };
 
 const CATEGORIAS: { id: CategoriaChamado; rotulo: string }[] = [
   { id: "NAO_SAIU", rotulo: "Minha impressão não saiu" },
@@ -115,6 +125,57 @@ function orientacao(dados: ConsultaResposta): {
   }
 }
 
+// Teclado hexadecimal próprio (sem teclado do SO), reutilizado pela consulta
+// de protocolo acima e pelo resgate de código de reimpressão abaixo — os dois
+// únicos pontos do overlay que pedem dígitos hex ao cliente.
+function TecladoHex({
+  onDigitar,
+  onApagar,
+  onLimpar,
+  disabled = false,
+}: {
+  onDigitar: (char: string) => void;
+  onApagar: () => void;
+  onLimpar: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <>
+      <div className="grid grid-cols-4 gap-3">
+        {TECLAS_HEX.map((t) => (
+          <button
+            key={t}
+            type="button"
+            disabled={disabled}
+            onClick={() => onDigitar(t)}
+            className="min-h-[56px] rounded-xl border border-white/10 bg-white/5 font-mono text-3xl font-bold text-white transition active:scale-95 disabled:opacity-40"
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onApagar}
+          className="flex min-h-[56px] items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 text-2xl font-semibold text-white transition active:scale-95 disabled:opacity-40"
+        >
+          <Delete className="h-7 w-7" /> Apagar
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onLimpar}
+          className="min-h-[56px] rounded-xl border border-white/10 bg-white/5 text-2xl font-semibold text-white transition active:scale-95 disabled:opacity-40"
+        >
+          Limpar
+        </button>
+      </div>
+    </>
+  );
+}
+
 // Overlay de ajuda: consulta por protocolo (teclado hex próprio) + chamado à equipe.
 export function OverlayAjuda({ onClose }: Props) {
   const [codigo, setCodigo] = useState("");
@@ -126,8 +187,22 @@ export function OverlayAjuda({ onClose }: Props) {
   // overlay: a spec do kiosk exige um overlay por vez).
   const [telegramAberto, setTelegramAberto] = useState(false);
 
+  // Resgate do código de reimpressão — campos SEPARADOS do teclado de
+  // protocolo da consulta acima (spec kiosk-help-requests): protocolo e
+  // código de uso único (R-XXXXXXXX) que a equipe passou ao cliente.
+  const [reimpressaoAberto, setReimpressaoAberto] = useState(false);
+  const [campoAtivoReimpressao, setCampoAtivoReimpressao] =
+    useState<CampoReimpressao>("protocolo");
+  const [protocoloReimpressao, setProtocoloReimpressao] = useState("");
+  const [codigoReimpressao, setCodigoReimpressao] = useState("");
+  const [estadoReimpressao, setEstadoReimpressao] = useState<EstadoReimpressao>({
+    fase: "idle",
+  });
+
   const completo = codigo.length === 8;
   const telegramDisponivel = Boolean(TELEGRAM_HELP_INVITE_URL);
+  const reimpressaoCompleta =
+    protocoloReimpressao.length === 8 && codigoReimpressao.length === 8;
 
   function adicionar(char: string) {
     if (codigo.length >= 8) return;
@@ -184,6 +259,62 @@ export function OverlayAjuda({ onClose }: Props) {
     }
   }
 
+  // O teclado hex é compartilhado pelos dois campos do resgate; o dígito cai
+  // no campo ativo e, ao completar o protocolo, avança sozinho para o código.
+  function digitarReimpressao(char: string) {
+    if (campoAtivoReimpressao === "protocolo") {
+      if (protocoloReimpressao.length >= 8) return;
+      const novo = protocoloReimpressao + char;
+      setProtocoloReimpressao(novo);
+      if (novo.length === 8) setCampoAtivoReimpressao("codigo");
+    } else {
+      if (codigoReimpressao.length >= 8) return;
+      setCodigoReimpressao((c) => c + char);
+    }
+    setEstadoReimpressao({ fase: "idle" });
+  }
+  function apagarReimpressao() {
+    if (campoAtivoReimpressao === "protocolo") {
+      setProtocoloReimpressao((c) => c.slice(0, -1));
+    } else {
+      setCodigoReimpressao((c) => c.slice(0, -1));
+    }
+    setEstadoReimpressao({ fase: "idle" });
+  }
+  function limparReimpressao() {
+    setProtocoloReimpressao("");
+    setCodigoReimpressao("");
+    setCampoAtivoReimpressao("protocolo");
+    setEstadoReimpressao({ fase: "idle" });
+  }
+
+  async function confirmarReimpressao() {
+    if (!reimpressaoCompleta) return;
+    setEstadoReimpressao({ fase: "enviando" });
+    try {
+      const res = await fetch("/api/kiosk/reimpressao", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          protocolo: protocoloReimpressao,
+          codigo: `R-${codigoReimpressao}`,
+        }),
+      });
+      if (res.status === 429) {
+        setEstadoReimpressao({ fase: "limite" });
+        return;
+      }
+      if (!res.ok) {
+        setEstadoReimpressao({ fase: "erro" });
+        return;
+      }
+      const dados = (await res.json()) as { posicao_na_fila: number | null };
+      setEstadoReimpressao({ fase: "sucesso", posicaoNaFila: dados.posicao_na_fila });
+    } catch {
+      setEstadoReimpressao({ fase: "erro" });
+    }
+  }
+
   const dadosEncontrado =
     consulta.fase === "encontrado" ? orientacao(consulta.dados) : null;
 
@@ -203,6 +334,14 @@ export function OverlayAjuda({ onClose }: Props) {
     telegramRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [telegramAberto]);
 
+  // Mesmo padrão de rolagem do painel do Telegram, para o painel de resgate
+  // do código de reimpressão.
+  const reimpressaoRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!reimpressaoAberto) return;
+    reimpressaoRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [reimpressaoAberto]);
+
   // Visor fixo fora da área rolável: continua visível enquanto o cliente
   // digita mesmo quando o teclado força rolagem em telas baixas (1024×600).
   const visor = (
@@ -220,36 +359,7 @@ export function OverlayAjuda({ onClose }: Props) {
 
   return (
     <KioskOverlay titulo="Ajuda" cabecalho={visor} fundoVisivel onClose={onClose}>
-      {/* Teclado hexadecimal próprio (sem teclado do SO) */}
-      <div className="grid grid-cols-4 gap-3">
-        {TECLAS_HEX.map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => adicionar(t)}
-            className="min-h-[56px] rounded-xl border border-white/10 bg-white/5 font-mono text-3xl font-bold text-white transition active:scale-95"
-          >
-            {t}
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 gap-3">
-        <button
-          type="button"
-          onClick={apagar}
-          className="flex min-h-[56px] items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 text-2xl font-semibold text-white transition active:scale-95"
-        >
-          <Delete className="h-7 w-7" /> Apagar
-        </button>
-        <button
-          type="button"
-          onClick={limpar}
-          className="min-h-[56px] rounded-xl border border-white/10 bg-white/5 text-2xl font-semibold text-white transition active:scale-95"
-        >
-          Limpar
-        </button>
-      </div>
+      <TecladoHex onDigitar={adicionar} onApagar={apagar} onLimpar={limpar} />
 
       <button
         type="button"
@@ -367,6 +477,99 @@ export function OverlayAjuda({ onClose }: Props) {
           )}
         </div>
       )}
+
+      {/* Resgate de código de reimpressão — caminho SEPARADO do teclado de
+          protocolo da consulta acima (spec kiosk-help-requests): usado quando
+          a equipe já autorizou uma reimpressão e passou o código pelo bot. */}
+      <div className="mt-8 border-t border-white/10 pt-6" ref={reimpressaoRef}>
+        <button
+          type="button"
+          onClick={() => setReimpressaoAberto((aberto) => !aberto)}
+          className="flex min-h-[56px] w-full items-center justify-center gap-3 rounded-xl border border-white/15 bg-white/5 px-5 text-xl font-semibold text-white transition active:scale-95"
+        >
+          <KeyRound className="h-7 w-7" />
+          Tenho um código de reimpressão
+        </button>
+
+        {reimpressaoAberto && (
+          <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-6">
+            <p className="mb-3 text-lg text-zinc-300">
+              Toque em um campo, digite com o teclado abaixo: o protocolo do
+              pedido e o código que a equipe te passou.
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setCampoAtivoReimpressao("protocolo")}
+                className={`rounded-xl border p-3 text-left transition ${
+                  campoAtivoReimpressao === "protocolo"
+                    ? "border-titans-orange bg-black/40"
+                    : "border-white/10 bg-black/20"
+                }`}
+              >
+                <span className="block text-sm text-zinc-400">Protocolo</span>
+                <span className="font-mono text-xl font-bold tracking-[0.2em] text-white">
+                  {protocoloReimpressao.padEnd(8, "•")}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCampoAtivoReimpressao("codigo")}
+                className={`rounded-xl border p-3 text-left transition ${
+                  campoAtivoReimpressao === "codigo"
+                    ? "border-titans-orange bg-black/40"
+                    : "border-white/10 bg-black/20"
+                }`}
+              >
+                <span className="block text-sm text-zinc-400">Código (R-)</span>
+                <span className="font-mono text-xl font-bold tracking-[0.2em] text-white">
+                  {codigoReimpressao.padEnd(8, "•")}
+                </span>
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <TecladoHex
+                onDigitar={digitarReimpressao}
+                onApagar={apagarReimpressao}
+                onLimpar={limparReimpressao}
+                disabled={estadoReimpressao.fase === "enviando"}
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={confirmarReimpressao}
+              disabled={!reimpressaoCompleta || estadoReimpressao.fase === "enviando"}
+              className="mt-3 min-h-[64px] w-full rounded-2xl bg-gradient-to-r from-titans-red to-titans-orange text-2xl font-bold text-white shadow-lg shadow-titans-red/25 transition active:scale-95 disabled:opacity-40"
+            >
+              {estadoReimpressao.fase === "enviando"
+                ? "Enviando…"
+                : "Confirmar reimpressão"}
+            </button>
+
+            {estadoReimpressao.fase === "sucesso" && (
+              <div className="mt-4 flex items-center justify-center gap-3 rounded-2xl border border-green-500/30 bg-green-500/10 p-5 text-center text-xl font-semibold text-green-200">
+                <CheckCircle2 className="h-7 w-7" />
+                Reimpressão solicitada!
+                {estadoReimpressao.posicaoNaFila != null &&
+                  ` Você é o ${estadoReimpressao.posicaoNaFila}º da fila.`}
+              </div>
+            )}
+            {estadoReimpressao.fase === "erro" && (
+              <p className="mt-4 text-center text-lg text-red-300">
+                Código inválido ou pedido não elegível. Confira com a equipe.
+              </p>
+            )}
+            {estadoReimpressao.fase === "limite" && (
+              <p className="mt-4 text-center text-lg text-amber-300">
+                Muitas tentativas. Aguarde alguns minutos e tente de novo.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </KioskOverlay>
   );
 }

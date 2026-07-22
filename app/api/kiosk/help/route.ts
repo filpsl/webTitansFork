@@ -1,11 +1,12 @@
 import { supabaseAdmin } from "@/lib/server/supabase-admin";
+import { enviarMensagemTelegram } from "@/lib/server/telegram";
+import { PROTOCOLO_RE } from "@/lib/protocolo";
 
 // Registro de chamados de ajuda do kiosk. Server-side (service_role): a tabela
 // chamados_ajuda não tem policy anon, e o segredo do webhook fica no servidor.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const PROTOCOLO_RE = /^[0-9a-fA-F]{8}$/;
 const CATEGORIAS = ["NAO_SAIU", "SAIU_COM_DEFEITO", "OUTRO"] as const;
 type Categoria = (typeof CATEGORIAS)[number];
 
@@ -18,35 +19,19 @@ const DESCRICAO_CATEGORIA: Record<Categoria, string> = {
 };
 
 // Best-effort: falha na notificação nunca impede a persistência do chamado
-// nem retorna erro ao cliente. Envia via Bot API do Telegram (sendMessage).
+// nem retorna erro ao cliente.
 async function notificarEquipe(protocolo: string | null, categoria: Categoria) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return;
+  if (!chatId) return;
   const quando = new Date().toLocaleString("pt-BR", {
     timeZone: "America/Sao_Paulo",
   });
-  const text =
+  const texto =
     `🖨️ Chamado de ajuda no totem\n` +
     `Categoria: ${DESCRICAO_CATEGORIA[categoria]}\n` +
     `Protocolo: ${protocolo ?? "(não informado)"}\n` +
     `Horário: ${quando}`;
-  try {
-    const res = await fetch(
-      `https://api.telegram.org/bot${token}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text }),
-        signal: AbortSignal.timeout(3000),
-      }
-    );
-    if (!res.ok) {
-      console.error("Telegram sendMessage falhou:", res.status, await res.text());
-    }
-  } catch (err) {
-    console.error("Notificação Telegram falhou (best-effort):", err);
-  }
+  await enviarMensagemTelegram({ chatId, texto });
 }
 
 export async function POST(req: Request) {

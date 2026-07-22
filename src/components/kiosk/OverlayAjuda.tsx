@@ -45,6 +45,19 @@ const TECLAS_HEX = [
 // ausente esconde o botão do Telegram no overlay.
 const TELEGRAM_HELP_INVITE_URL = process.env.NEXT_PUBLIC_TELEGRAM_HELP_INVITE_URL;
 
+// Azul da marca do Telegram — usado no fundo do botão para destacá-lo.
+const TELEGRAM_AZUL = "#229ED9";
+
+// Aviãozinho do Telegram como SVG inline (lucide não tem a marca). Usa
+// currentColor, então herda o branco do texto do botão.
+function TelegramIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden className={className}>
+      <path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z" />
+    </svg>
+  );
+}
+
 // Frase "Impresso [hoje/ontem/em dd/MM] às HH:MM." a partir de printed_at.
 // Sem printed_at cai para "Impresso." — texto que ainda faz sentido no detalhe.
 function textoImpressao(printedAt: string | null): string {
@@ -324,8 +337,10 @@ export function OverlayAjuda({ onClose }: Props) {
           <button
             type="button"
             onClick={() => setTelegramAberto((aberto) => !aberto)}
-            className="min-h-[56px] w-full rounded-xl border border-white/15 bg-white/5 px-5 text-xl font-semibold text-white transition active:scale-95"
+            style={{ backgroundColor: TELEGRAM_AZUL }}
+            className="flex min-h-[56px] w-full items-center justify-center gap-3 rounded-xl px-5 text-xl font-semibold text-white shadow-lg shadow-sky-500/25 transition active:scale-95"
           >
+            <TelegramIcon className="h-7 w-7" />
             Falar com a equipe no Telegram
           </button>
 

@@ -47,7 +47,7 @@ export function KioskOverlay({
     <div
       className={`fixed inset-0 z-50 flex items-stretch p-4 animate-in fade-in duration-200 ${
         fundoVisivel
-          ? "justify-end bg-black/40"
+          ? "justify-center bg-black/40"
           : "justify-center bg-black/75 backdrop-blur-sm"
       }`}
       onPointerDown={reiniciarTimer}

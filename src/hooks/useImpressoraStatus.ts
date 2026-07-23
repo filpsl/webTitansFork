@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 
@@ -22,10 +22,16 @@ export type DetalhesImpressora = {
   toner_baixo?: boolean;
 };
 
+// Lido de `impressora_status_publica` (migration 0012), não da tabela base:
+// `idade_ms` já vem calculada inteiramente no relógio do servidor Postgres
+// (`now() - atualizado_em`, ambos no mesmo relógio). O client nunca compara
+// `atualizado_em` contra o relógio do dispositivo que acessa o kiosk/
+// `/impressao` — isso é o que causava "offline" falso quando o usuário
+// alterava a data/hora do totem.
 type ImpressoraStatusRow = {
   estado: EstadoImpressora;
-  atualizado_em: string;
   detalhes: DetalhesImpressora | null;
+  idade_ms: number;
 };
 
 // 3× o poll de 10 s do worker: heartbeat mais velho que isso => worker/Pi caiu.
@@ -41,26 +47,38 @@ export type ResultadoImpressora = {
   isLoading: boolean;
 };
 
-// Estado da impressora para o kiosk: lê a linha única de `impressora_status`,
-// assina o Realtime da própria tabela e deriva `offline` quando o heartbeat
-// envelhece — recalculado a cada tick local, não só no fetch.
+// Âncora de idade do heartbeat: `idadeMsNoFetch` (calculada no Postgres, no
+// momento em que o fetch foi respondido) + `perfMsNoFetch` (o
+// `performance.now()` do navegador naquele instante). Entre fetches, a idade
+// atual é extrapolada como `idadeMsNoFetch + (performance.now() atual -
+// perfMsNoFetch)`. `performance.now()` é monotônico: só avança com o tempo
+// real decorrido desde o carregamento da página — ao contrário de
+// `Date.now()`, não é afetado por o usuário mudar a data/hora do
+// dispositivo.
+type Ancora = {
+  idadeMsNoFetch: number;
+  perfMsNoFetch: number;
+};
+
+// Estado da impressora para o kiosk: lê a linha única de
+// `impressora_status_publica`, assina o Realtime da tabela base
+// `impressora_status` e deriva `offline` extrapolando a idade do heartbeat
+// a partir da última âncora — recalculado a cada tick local, não só no
+// fetch.
 export function useImpressoraStatus(): ResultadoImpressora {
   const query = useQuery({
     queryKey: ["kiosk", "impressora-status"],
     refetchInterval: POLL_MS,
     queryFn: async () => {
       const { data, error } = await supabase
-        .from("impressora_status")
-        .select("estado, atualizado_em, detalhes")
+        .from("impressora_status_publica")
+        .select("estado, detalhes, idade_ms")
         .limit(1)
         .maybeSingle();
       if (error) throw error;
       return (data ?? null) as ImpressoraStatusRow | null;
     },
   });
-
-  const refetchRef = useRef(query.refetch);
-  refetchRef.current = query.refetch;
 
   useEffect(() => {
     const channel = supabase
@@ -69,25 +87,47 @@ export function useImpressoraStatus(): ResultadoImpressora {
         "postgres_changes",
         { event: "*", schema: "public", table: "impressora_status" },
         () => {
-          void refetchRef.current();
+          void query.refetch();
         }
       )
       .subscribe();
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, []);
-
-  // Tick local: força reavaliação do "offline" sem depender de fetch/evento.
-  const [agora, setAgora] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setAgora(Date.now()), TICK_MS);
-    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const row = query.data ?? null;
-  const offline =
-    !row || agora - new Date(row.atualizado_em).getTime() > HEARTBEAT_TIMEOUT_MS;
+
+  // Âncora: atualizada em efeito (nunca durante o render) a cada fetch bem-
+  // sucedido novo. `query.data` é um objeto novo a cada resposta do
+  // Supabase (mesmo quando os valores não mudam), então serve de gatilho
+  // confiável para resincronizar — poll de 15s, evento Realtime ou refetch
+  // por foco de janela disparam essa resincronização igualmente.
+  const [ancora, setAncora] = useState<Ancora | null>(null);
+  useEffect(() => {
+    if (row) {
+      setAncora({
+        idadeMsNoFetch: row.idade_ms,
+        perfMsNoFetch: performance.now(),
+      });
+    } else {
+      setAncora(null);
+    }
+  }, [row]);
+
+  // Tick local: relógio monotônico do navegador, atualizado periodicamente
+  // só para forçar a reavaliação do "offline" mesmo sem novo fetch/evento.
+  const [agoraPerf, setAgoraPerf] = useState(() => performance.now());
+  useEffect(() => {
+    const id = setInterval(() => setAgoraPerf(performance.now()), TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  const idadeAtualMs = ancora
+    ? ancora.idadeMsNoFetch + (agoraPerf - ancora.perfMsNoFetch)
+    : null;
+  const offline = !row || idadeAtualMs === null || idadeAtualMs > HEARTBEAT_TIMEOUT_MS;
 
   return {
     estado: row?.estado ?? null,

@@ -60,11 +60,13 @@ type Ancora = {
   perfMsNoFetch: number;
 };
 
-// Estado da impressora para o kiosk: lê a linha única de
-// `impressora_status_publica`, assina o Realtime da tabela base
-// `impressora_status` e deriva `offline` extrapolando a idade do heartbeat
-// a partir da última âncora — recalculado a cada tick local, não só no
-// fetch.
+// Estado da impressora para o kiosk: lê o heartbeat mais recente de
+// `impressora_status_publica` (ordenado por `atualizado_em desc` — a tabela
+// pode ter mais de uma linha, ex. filas antigas/de teste nunca limpas, e sem
+// essa ordenação o Postgres pode devolver qualquer uma), assina o Realtime
+// da tabela base `impressora_status` e deriva `offline` extrapolando a
+// idade do heartbeat a partir da última âncora — recalculado a cada tick
+// local, não só no fetch.
 export function useImpressoraStatus(): ResultadoImpressora {
   const query = useQuery({
     queryKey: ["kiosk", "impressora-status"],
@@ -73,6 +75,7 @@ export function useImpressoraStatus(): ResultadoImpressora {
       const { data, error } = await supabase
         .from("impressora_status_publica")
         .select("estado, detalhes, idade_ms")
+        .order("atualizado_em", { ascending: false })
         .limit(1)
         .maybeSingle();
       if (error) throw error;

@@ -700,6 +700,29 @@ def saude_da_impressora(cfg: Config, fila: str) -> tuple[str, dict]:
     return fisico or estado, detalhes
 
 
+def saude_pela_fila_local(cfg: Config, fila: str) -> tuple[str, dict]:
+    """Saúde SEM tocar no equipamento — só a fila CUPS local. Usada durante um job.
+
+    `saude_da_impressora` abre duas transações IPP no equipamento por ciclo
+    (`_printer_state_equipamento` e `coletar_saude_ipp`), além do TCP-connect de
+    `fila_alcancavel`. Com POLL_INTERVAL de 10s, um job travado leva dezenas
+    dessas conexões concorrendo com a transmissão PCLm do backend. A 135w é uma
+    laser SOHO com atendimento IPP limitado, e essa concorrência é a principal
+    suspeita dos jobs que travam até o PRINT_TIMEOUT despejando lixo binário.
+
+    O cupsd local responde por `printer-state-reasons` a partir da própria
+    comunicação do backend com o equipamento, então falha física (papel/toner)
+    continua sendo detectada durante o job — sem abrir conexão nova na
+    impressora. Best-effort: sem leitura, devolve OK e detalhes vazios (a fila
+    está por definição operando, já que acabamos de submeter um job nela).
+    """
+    atributos = _consultar_ipp(cfg, f"ipp://localhost:631/printers/{fila}")
+    if atributos is None:
+        return "OK", {}
+    fisico, detalhes = derivar_fisico(atributos)
+    return fisico or "OK", detalhes
+
+
 # Estados cuja ENTRADA aciona o aviso à equipe. PAUSADA/INALCANCAVEL ficam de
 # fora: oscilam com Wi-Fi/ação humana deliberada e virariam ruído no Telegram.
 ESTADOS_NOTIFICAVEIS = {"SEM_PAPEL", "SEM_TONER", "MANUTENCAO"}
@@ -869,8 +892,15 @@ class Heartbeat:
             self._imprimindo.clear()
 
     def _publicar(self) -> None:
-        estado, detalhes = saude_da_impressora(self._cfg, self._cfg.printer_name)
-        self.estado_saude = estado
+        if self._imprimindo.is_set():
+            # Job em voo: sondagem leve, sem abrir conexão no equipamento (ver
+            # saude_pela_fila_local). `estado_saude` NÃO é atualizado aqui —
+            # mantém a última leitura completa, que o loop principal só consulta
+            # entre pedidos; o primeiro heartbeat sem job em voo a renova.
+            estado, detalhes = saude_pela_fila_local(self._cfg, self._cfg.printer_name)
+        else:
+            estado, detalhes = saude_da_impressora(self._cfg, self._cfg.printer_name)
+            self.estado_saude = estado
         # IMPRIMINDO só sobrepõe OK: uma falha física detectada no meio de um
         # job (ex.: papel acabou) tem prioridade na faixa do kiosk.
         publicado = "IMPRIMINDO" if estado == "OK" and self._imprimindo.is_set() else estado

@@ -377,6 +377,49 @@ class ConferirFolhasTests(unittest.TestCase):
         self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-198", 1))
 
 
+class AlvoIppDaFilaTests(unittest.TestCase):
+    """`alvo_ipp_da_fila`: para onde vão as consultas de saúde de cada fila."""
+
+    def _com_device_uri(self, uri):
+        """Fixa o device-uri da fila (nenhum `lpstat` roda)."""
+        original = worker.device_uri_da_fila
+        worker.device_uri_da_fila = lambda fila: uri
+        self.addCleanup(lambda: setattr(worker, "device_uri_da_fila", original))
+
+    def test_fila_ipp_usa_o_proprio_device_uri(self) -> None:
+        self._com_device_uri("ipp://HPE4E749FC401D.local/ipp/print")
+        self.assertEqual(
+            worker.alvo_ipp_da_fila("Titans_Laser"),
+            "ipp://HPE4E749FC401D.local/ipp/print",
+        )
+
+    def test_fila_socket_consulta_o_mesmo_equipamento_por_ipp(self) -> None:
+        """Driver nativo na porta RAW: a saúde ainda tem de vir do equipamento."""
+        self._com_device_uri("socket://10.74.1.109:9100")
+        self.assertEqual(
+            worker.alvo_ipp_da_fila("Titans_SPL"), "ipp://10.74.1.109:631/ipp/print"
+        )
+
+    def test_fila_socket_com_ipv6_leva_colchetes(self) -> None:
+        self._com_device_uri("socket://[fe80::1]:9100")
+        self.assertEqual(
+            worker.alvo_ipp_da_fila("Titans_SPL"), "ipp://[fe80::1]:631/ipp/print"
+        )
+
+    def test_fila_usb_cai_para_a_fila_local(self) -> None:
+        self._com_device_uri("usb://HP/Laser%20MFP%20135w?serial=ABC")
+        self.assertEqual(
+            worker.alvo_ipp_da_fila("HP_USB"),
+            "ipp://localhost:631/printers/HP_USB",
+        )
+
+    def test_sem_device_uri_cai_para_a_fila_local(self) -> None:
+        self._com_device_uri(None)
+        self.assertEqual(
+            worker.alvo_ipp_da_fila("Titans_SPL"),
+            "ipp://localhost:631/printers/Titans_SPL",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -465,12 +465,24 @@ def alvo_ipp_da_fila(fila: str) -> str:
 
     Preferência: o device URI do equipamento (fonte direta, sem o cache do
     CUPS) quando for um esquema IPP de rede; senão, a própria fila CUPS local.
+
+    Filas `socket://host:9100` (driver nativo despejando o fluxo na porta RAW)
+    não falam IPP no device URI, mas o EQUIPAMENTO é o mesmo e atende IPP na
+    631. Sem essa tradução, toda a saúde (prontidão do firmware, SEM_PAPEL,
+    SEM_TONER) cairia para a fila CUPS local, que responde com estado em cache
+    mesmo com a impressora desligada — ou seja, não prova nada.
     """
     uri = device_uri_da_fila(fila)
     if uri:
         parsed = parse_device_uri(uri)
-        if parsed and parsed[0] in IPP_SCHEMES and parsed[1]:
-            return uri
+        if parsed and parsed[1]:
+            scheme, host, _ = parsed
+            if scheme in IPP_SCHEMES:
+                return uri
+            if scheme == "socket":
+                if ":" in host:  # IPv6 literal precisa de colchetes no URI
+                    host = f"[{host}]"
+                return f"ipp://{host}:{PORTA_PADRAO['ipp']}/ipp/print"
     return f"ipp://localhost:631/printers/{fila}"
 
 

@@ -429,18 +429,35 @@ ARQUIVO_IPP_SAUDE = """{
 }
 """
 
-_ipp_test_path: str | None = None
+# Pedido IPP para o desfecho real de um job já submetido (ver conferir_folhas).
+ARQUIVO_IPP_JOB = """{
+    NAME "Desfecho do job"
+    OPERATION Get-Job-Attributes
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri job-uri $uri
+    ATTR keyword requested-attributes job-state,job-state-reasons,job-media-sheets-completed,job-impressions-completed
+}
+"""
+
+_ipp_test_paths: dict[str, str] = {}
+
+
+def _arquivo_ipp(nome: str, conteudo: str) -> str:
+    """Materializa (uma vez por `nome`) um pedido IPP em arquivo para o ipptool."""
+    caminho = _ipp_test_paths.get(nome)
+    if caminho is None or not os.path.exists(caminho):
+        fd, caminho = tempfile.mkstemp(suffix=".test", prefix=f"print-worker-{nome}-")
+        with os.fdopen(fd, "w") as fh:
+            fh.write(conteudo)
+        _ipp_test_paths[nome] = caminho
+    return caminho
 
 
 def _arquivo_ipp_teste() -> str:
-    """Materializa (uma vez) o pedido IPP num arquivo temporário para o ipptool."""
-    global _ipp_test_path
-    if _ipp_test_path is None or not os.path.exists(_ipp_test_path):
-        fd, caminho = tempfile.mkstemp(suffix=".test", prefix="print-worker-ipp-")
-        with os.fdopen(fd, "w") as fh:
-            fh.write(ARQUIVO_IPP_SAUDE)
-        _ipp_test_path = caminho
-    return _ipp_test_path
+    """Pedido IPP de saúde da impressora."""
+    return _arquivo_ipp("ipp", ARQUIVO_IPP_SAUDE)
 
 
 def alvo_ipp_da_fila(fila: str) -> str:
@@ -460,6 +477,21 @@ def alvo_ipp_da_fila(fila: str) -> str:
 # Enum IPP `printer-state` (RFC 8011) e os nomes que o ipptool imprime por eles.
 IDLE, PROCESSING, STOPPED = 3, 4, 5
 PRINTER_STATE_POR_NOME = {"idle": IDLE, "processing": PROCESSING, "stopped": STOPPED}
+
+# Enum IPP `job-state` (RFC 8011). `canceled`/`aborted` somem de `lpstat -o`
+# exatamente como `completed` — daí a necessidade de olhar o enum.
+JOB_CANCELED, JOB_ABORTED, JOB_COMPLETED = 7, 8, 9
+JOB_STATE_POR_NOME = {
+    "pending": 3,
+    "pending-held": 4,
+    "processing": 5,
+    "processing-stopped": 6,
+    "canceled": JOB_CANCELED,
+    "aborted": JOB_ABORTED,
+    "completed": JOB_COMPLETED,
+}
+JOB_NOME_POR_STATE = {v: k for k, v in JOB_STATE_POR_NOME.items()}
+JOB_ESTADOS_DE_FALHA = {JOB_CANCELED, JOB_ABORTED}
 
 
 def _parse_atributos_ipp(saida: str) -> dict:
@@ -972,6 +1004,117 @@ def enviar_para_impressora(fila: str, caminho: str, opcoes: list[str]) -> str:
     return match.group(1)
 
 
+# --- Conferência do que a impressora REALMENTE imprimiu ----------------------
+#
+# `lpstat -o` não prova sucesso, e o `job-state` do cupsd local também não: o
+# backend ipp abre um job SEPARADO na impressora (outro job-id) e, quando o
+# firmware da 135w estraga a renderização e cancela o job dele, o job LOCAL
+# ainda termina como `completed` — foi exatamente o caso do job 196 (1 página
+# pedida, 2 folhas cuspidas de lixo binário, `completed` no cupsd).
+#
+# O que o backend propaga fielmente para o job local é a CONTAGEM DE FOLHAS
+# vinda da impressora (`job-media-sheets-completed`). Nos episódios de lixo ela
+# sempre estourou o esperado (5, 3 e 2 folhas para pedidos de 1 folha), e em
+# todos os jobs saudáveis do histórico bateu exatamente — inclusive nos de
+# múltiplas páginas e múltiplas cópias. É esse o sinal que usamos.
+#
+# Best-effort, como o resto do arquivo: sem leitura confiável, não inventamos
+# falha — degradamos para o comportamento anterior (confiar na fila).
+
+
+def numero_do_job(job_id: str) -> str | None:
+    """`Titans_Laser-196` -> `196`; None se não houver sufixo numérico."""
+    match = re.search(r"-(\d+)$", job_id)
+    return match.group(1) if match else None
+
+
+def _parse_desfecho_job(saida: str) -> dict:
+    """Extrai job-state, razões e folhas impressas da saída `-tv` do ipptool.
+
+    Mesmo cuidado do `printer-state`: `job-state\\s*\\(` não casa com
+    `job-state-reasons` (que segue com "-"). O `-tv` pode imprimir o nome
+    (`completed`) ou o número (`9`).
+    """
+    def _inteiro(atributo: str) -> int | None:
+        m = re.search(rf"{atributo}\s*\([^)]*\)\s*=\s*(-?\d+)", saida)
+        if not m:
+            return None
+        valor = int(m.group(1))
+        return valor if valor >= 0 else None
+
+    razoes: list[str] = []
+    m = re.search(r"job-state-reasons\s*\([^)]*\)\s*=\s*(.+)", saida)
+    if m:
+        razoes = [r.strip() for r in m.group(1).split(",") if r.strip()]
+
+    estado: int | None = None
+    m = re.search(r"job-state\s*\([^)]*\)\s*=\s*([\w-]+)", saida)
+    if m:
+        bruto = m.group(1).lower()
+        estado = int(bruto) if bruto.isdigit() else JOB_STATE_POR_NOME.get(bruto)
+
+    return {
+        "job_state": estado,
+        "job_state_reasons": razoes,
+        "folhas": _inteiro("job-media-sheets-completed"),
+        "impressoes": _inteiro("job-impressions-completed"),
+    }
+
+
+def desfecho_do_job(cfg: Config, job_id: str) -> dict | None:
+    """Desfecho do job no cupsd local (que preserva o histórico). None se ilegível."""
+    numero = numero_do_job(job_id)
+    if numero is None or shutil.which("ipptool") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                "ipptool",
+                "-tv",
+                f"ipp://localhost:631/jobs/{numero}",
+                _arquivo_ipp("job", ARQUIVO_IPP_JOB),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=max(cfg.reachability_timeout * 2, 5),
+            env=CUPS_ENV,
+        )
+    except Exception as err:  # noqa: BLE001 - timeout/erro => degrada
+        log.debug("ipptool (desfecho do job %s) falhou: %s", job_id, err)
+        return None
+    desfecho = _parse_desfecho_job(proc.stdout)
+    if desfecho["job_state"] is None and desfecho["folhas"] is None:
+        return None
+    return desfecho
+
+
+def conferir_folhas(cfg: Config, job_id: str, folhas_esperadas: int) -> str | None:
+    """Descreve a falha se a impressora não produziu o esperado; None se OK.
+
+    Duas evidências de estrago, ambas vistas nos episódios reais de lixo:
+    o job terminou `canceled`/`aborted`, ou a contagem de folhas divergiu do
+    pedido. Leitura indisponível => None (não acusamos falha sem prova).
+    """
+    desfecho = desfecho_do_job(cfg, job_id)
+    if desfecho is None:
+        log.debug("Job %s: desfecho ilegível — mantendo o veredito da fila", job_id)
+        return None
+
+    estado = desfecho["job_state"]
+    if estado in JOB_ESTADOS_DE_FALHA:
+        razoes = ", ".join(desfecho["job_state_reasons"]) or "sem razões"
+        return f"job terminou {JOB_NOME_POR_STATE.get(estado, estado)} ({razoes})"
+
+    folhas = desfecho["folhas"]
+    if folhas is not None and folhas != folhas_esperadas:
+        razoes = ", ".join(desfecho["job_state_reasons"]) or "sem razões"
+        return (
+            f"a impressora contabilizou {folhas} folha(s) para um pedido de "
+            f"{folhas_esperadas} — provável despejo de lixo binário ({razoes})"
+        )
+    return None
+
+
 def aguardar_conclusao(cfg: Config, fila: str, job_id: str) -> bool:
     """Espera o job sumir da fila de não-concluídos. True se concluiu no tempo."""
     deadline = time.monotonic() + cfg.print_timeout
@@ -1145,6 +1288,21 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
             )
 
             if aguardar_conclusao(cfg, fila, job_id):
+                # Sair da fila não prova que saiu certo: conferimos com o cupsd
+                # o que a impressora de fato produziu antes de cobrar do cliente.
+                problema = conferir_folhas(
+                    cfg, job_id, paginas_reais * quantidade_copias
+                )
+                if problema:
+                    log.error(
+                        "Pedido %s: job %s concluiu na fila %s mas %s -> ERRO",
+                        pedido_id,
+                        job_id,
+                        fila,
+                        problema,
+                    )
+                    mark(sb, pedido_id, "ERRO")
+                    return
                 mark(sb, pedido_id, "IMPRESSO", {"printed_at": now_iso()})
                 log.info("Pedido %s: IMPRESSO (fila %s)", pedido_id, fila)
             else:

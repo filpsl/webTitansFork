@@ -239,5 +239,144 @@ class LinhasDeTransicaoTests(unittest.TestCase):
         self.assertEqual(pendente, "SEM_PAPEL")
 
 
+class NumeroDoJobTests(unittest.TestCase):
+    """`numero_do_job`: parte numérica do job id do CUPS."""
+
+    def test_job_id_tipico(self) -> None:
+        self.assertEqual(worker.numero_do_job("Titans_Laser-196"), "196")
+
+    def test_fila_com_hifens_e_digitos_no_nome(self) -> None:
+        """Só o último grupo numérico conta — o nome da fila pode ter dígitos."""
+        self.assertEqual(
+            worker.numero_do_job("HP-Laser-MFP-131-133-135-138-42"), "42"
+        )
+
+    def test_sem_sufixo_numerico(self) -> None:
+        self.assertIsNone(worker.numero_do_job("Titans_Laser"))
+
+
+class ParseDesfechoJobTests(unittest.TestCase):
+    """`_parse_desfecho_job`: job-state, razões e contagem de folhas."""
+
+    def test_job_limpo(self) -> None:
+        """Caso real do job 197: 1 folha para um pedido de 1 folha."""
+        saida = (
+            "        job-state (enum) = completed\n"
+            "        job-state-reasons (keyword) = job-completed-successfully\n"
+            "        job-impressions-completed (integer) = 1\n"
+            "        job-media-sheets-completed (integer) = 1\n"
+        )
+        desfecho = worker._parse_desfecho_job(saida)
+        self.assertEqual(desfecho["job_state"], worker.JOB_COMPLETED)
+        self.assertEqual(desfecho["job_state_reasons"], ["job-completed-successfully"])
+        self.assertEqual(desfecho["folhas"], 1)
+        self.assertEqual(desfecho["impressoes"], 1)
+
+    def test_job_com_lixo_conclui_mas_conta_folhas_demais(self) -> None:
+        """Caso real do job 196: `completed`, porém 2 folhas para 1 pedida."""
+        saida = (
+            "        job-state (enum) = completed\n"
+            "        job-state-reasons (keyword) = processing-to-stop-point\n"
+            "        job-media-sheets-completed (integer) = 2\n"
+        )
+        desfecho = worker._parse_desfecho_job(saida)
+        self.assertEqual(desfecho["job_state"], worker.JOB_COMPLETED)
+        self.assertEqual(desfecho["folhas"], 2)
+
+    def test_estado_numerico(self) -> None:
+        saida = "job-state (enum) = 7\njob-state-reasons (keyword) = job-canceled-by-user\n"
+        desfecho = worker._parse_desfecho_job(saida)
+        self.assertEqual(desfecho["job_state"], worker.JOB_CANCELED)
+
+    def test_aborted_por_nome(self) -> None:
+        desfecho = worker._parse_desfecho_job("job-state (enum) = aborted\n")
+        self.assertEqual(desfecho["job_state"], worker.JOB_ABORTED)
+
+    def test_reasons_sozinho_nao_vira_state(self) -> None:
+        """A regex de `job-state` não pode casar com `job-state-reasons`."""
+        saida = "        job-state-reasons (keyword) = job-canceled-by-user\n"
+        desfecho = worker._parse_desfecho_job(saida)
+        self.assertIsNone(desfecho["job_state"])
+        self.assertEqual(desfecho["job_state_reasons"], ["job-canceled-by-user"])
+
+    def test_reasons_antes_do_state_nao_confunde(self) -> None:
+        saida = (
+            "        job-state-reasons (keyword) = job-completed-successfully\n"
+            "        job-state (enum) = completed\n"
+        )
+        self.assertEqual(
+            worker._parse_desfecho_job(saida)["job_state"], worker.JOB_COMPLETED
+        )
+
+    def test_multiplas_razoes(self) -> None:
+        saida = "job-state-reasons (keyword) = job-canceled-by-user,resources-are-not-ready\n"
+        self.assertEqual(
+            worker._parse_desfecho_job(saida)["job_state_reasons"],
+            ["job-canceled-by-user", "resources-are-not-ready"],
+        )
+
+    def test_folhas_negativas_viram_none(self) -> None:
+        saida = "job-media-sheets-completed (integer) = -1\n"
+        self.assertIsNone(worker._parse_desfecho_job(saida)["folhas"])
+
+    def test_saida_vazia(self) -> None:
+        desfecho = worker._parse_desfecho_job("")
+        self.assertIsNone(desfecho["job_state"])
+        self.assertIsNone(desfecho["folhas"])
+        self.assertEqual(desfecho["job_state_reasons"], [])
+
+
+class ConferirFolhasTests(unittest.TestCase):
+    """`conferir_folhas`: veredito sobre o que a impressora produziu."""
+
+    def _com_desfecho(self, desfecho):
+        """Troca `desfecho_do_job` por um retorno fixo (nenhum ipptool roda)."""
+        original = worker.desfecho_do_job
+        worker.desfecho_do_job = lambda cfg, job_id: desfecho
+        self.addCleanup(lambda: setattr(worker, "desfecho_do_job", original))
+
+    def test_folhas_batem_nao_acusa(self) -> None:
+        self._com_desfecho(
+            {"job_state": worker.JOB_COMPLETED, "job_state_reasons": [], "folhas": 4}
+        )
+        self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-192", 4))
+
+    def test_folhas_a_mais_acusa(self) -> None:
+        self._com_desfecho(
+            {
+                "job_state": worker.JOB_COMPLETED,
+                "job_state_reasons": ["processing-to-stop-point"],
+                "folhas": 2,
+            }
+        )
+        problema = worker.conferir_folhas(None, "Titans_Laser-196", 1)
+        self.assertIsNotNone(problema)
+        self.assertIn("2 folha(s)", problema)
+
+    def test_job_cancelado_acusa(self) -> None:
+        self._com_desfecho(
+            {
+                "job_state": worker.JOB_CANCELED,
+                "job_state_reasons": ["job-canceled-by-user"],
+                "folhas": 1,
+            }
+        )
+        problema = worker.conferir_folhas(None, "Titans_Laser-182", 1)
+        self.assertIsNotNone(problema)
+        self.assertIn("canceled", problema)
+
+    def test_leitura_indisponivel_nao_acusa(self) -> None:
+        """Sem prova, degrada para o veredito da fila (comportamento anterior)."""
+        self._com_desfecho(None)
+        self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-196", 1))
+
+    def test_folhas_ausentes_com_estado_ok_nao_acusa(self) -> None:
+        self._com_desfecho(
+            {"job_state": worker.JOB_COMPLETED, "job_state_reasons": [], "folhas": None}
+        )
+        self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-198", 1))
+
+
+
 if __name__ == "__main__":
     unittest.main()

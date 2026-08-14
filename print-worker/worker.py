@@ -68,6 +68,9 @@ class Config:
         self.print_timeout = int(os.environ.get("PRINT_TIMEOUT", "180"))
         self.stuck_timeout = int(os.environ.get("STUCK_TIMEOUT", "900"))
         self.reachability_timeout = int(os.environ.get("REACHABILITY_TIMEOUT", "3"))
+        # Community SNMP v1 de leitura, usada só para o contador de páginas do
+        # motor (ver `paginas_do_motor`). Vazia desliga a conferência por SNMP.
+        self.snmp_community = os.environ.get("SNMP_COMMUNITY", "public").strip()
         # Notificação da equipe via Telegram Bot API (opcional): sem as duas
         # envs, as transições de saúde são apenas logadas — nada quebra.
         self.telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -1016,6 +1019,192 @@ def enviar_para_impressora(fila: str, caminho: str, opcoes: list[str]) -> str:
     return match.group(1)
 
 
+# --- Contador de páginas do motor, via SNMP ---------------------------------
+#
+# Numa fila IPP o desfecho vem de `job-media-sheets-completed`, preenchido pelo
+# equipamento. Numa fila `socket://` (driver nativo despejando na porta RAW) esse
+# número NÃO existe: a impressora não registra o job na lista IPP dela, e o cupsd
+# local só ecoa as páginas que NÓS renderizamos — bate sempre e não prova nada.
+#
+# `prtMarkerLifeCount` (Printer MIB, RFC 3805) conta folha que passou pelo
+# mecanismo, independente de como o job entrou. Lido antes e depois, o delta é
+# quanto papel a impressora realmente gastou. Verificado na 135w: 1 folha
+# impressa pela fila socket move o contador de 1592 para 1593.
+#
+# São duas leituras UDP por pedido, ambas FORA da janela de transmissão: a regra
+# do df1b9f8 (não abrir conexão no equipamento enquanto um job está em voo)
+# continua valendo, porque nenhuma delas acontece durante o job.
+
+OID_PAGINAS_MOTOR = "1.3.6.1.2.1.43.10.2.1.4.1.1"  # prtMarkerLifeCount
+SNMP_PORTA = 161
+
+
+def _ber_len(n: int) -> bytes:
+    if n < 0x80:
+        return bytes([n])
+    corpo = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(corpo)]) + corpo
+
+
+def _tlv(tag: int, valor: bytes) -> bytes:
+    return bytes([tag]) + _ber_len(len(valor)) + valor
+
+
+def _ber_int(n: int) -> bytes:
+    return _tlv(0x02, n.to_bytes(max(1, (n.bit_length() + 8) // 8), "big", signed=True))
+
+
+def _ber_oid(oid: str) -> bytes:
+    partes = [int(x) for x in oid.split(".")]
+    corpo = bytes([partes[0] * 40 + partes[1]])
+    for n in partes[2:]:
+        if n < 128:
+            corpo += bytes([n])
+            continue
+        sub = b""
+        while n:
+            sub = bytes([(n & 0x7F) | (0x80 if sub else 0)]) + sub
+            n >>= 7
+        corpo += sub
+    return _tlv(0x06, corpo)
+
+
+def _ler_tlv(buf: bytes, i: int) -> tuple[int, bytes, int]:
+    """Lê um TLV BER em `buf` a partir de `i`; devolve (tag, valor, próximo i)."""
+    tag = buf[i]
+    tamanho = buf[i + 1]
+    i += 2
+    if tamanho & 0x80:  # forma longa: os 7 bits baixos dizem quantos bytes
+        octetos = tamanho & 0x7F
+        tamanho = int.from_bytes(buf[i : i + octetos], "big")
+        i += octetos
+    return tag, buf[i : i + tamanho], i + tamanho
+
+
+def _valor_do_varbind(resposta: bytes) -> int | None:
+    """Extrai o inteiro do 1º varbind de um GetResponse SNMP; None se não houver.
+
+    Cobre INTEGER (0x02) e os tipos de contador da Printer MIB (Counter32,
+    Gauge32, TimeTicks, Counter64). noSuchObject/noSuchInstance e error-status
+    diferente de zero devolvem None — degradar é sempre melhor que chutar.
+    """
+    _, corpo, _ = _ler_tlv(resposta, 0)  # SEQUENCE da mensagem
+    i = 0
+    _, _, i = _ler_tlv(corpo, i)  # version
+    _, _, i = _ler_tlv(corpo, i)  # community
+    tag, pdu, _ = _ler_tlv(corpo, i)
+    if tag != 0xA2:  # não é GetResponse
+        return None
+    j = 0
+    _, _, j = _ler_tlv(pdu, j)  # request-id
+    _, erro, j = _ler_tlv(pdu, j)  # error-status
+    if int.from_bytes(erro, "big"):
+        return None
+    _, _, j = _ler_tlv(pdu, j)  # error-index
+    _, varbinds, _ = _ler_tlv(pdu, j)
+    _, varbind, _ = _ler_tlv(varbinds, 0)
+    k = 0
+    _, _, k = _ler_tlv(varbind, k)  # OID consultado
+    tag, valor, _ = _ler_tlv(varbind, k)
+    if tag == 0x02:
+        return int.from_bytes(valor, "big", signed=True)
+    if tag in (0x41, 0x42, 0x43, 0x46):
+        return int.from_bytes(valor, "big")
+    return None
+
+
+def snmp_get_int(host: str, oid: str, community: str, timeout: int) -> int | None:
+    """GET SNMP v1 de um único OID inteiro. None em qualquer falha (best-effort)."""
+    pdu = _tlv(
+        0xA0,
+        _ber_int(1)  # request-id
+        + _ber_int(0)  # error-status
+        + _ber_int(0)  # error-index
+        + _tlv(0x30, _tlv(0x30, _ber_oid(oid) + _tlv(0x05, b""))),
+    )
+    mensagem = _tlv(0x30, _ber_int(0) + _tlv(0x04, community.encode()) + pdu)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.settimeout(timeout)
+        sock.sendto(mensagem, (host, SNMP_PORTA))
+        return _valor_do_varbind(sock.recvfrom(4096)[0])
+    except Exception as err:  # noqa: BLE001 - timeout/resposta torta => degrada
+        log.debug("SNMP %s em %s falhou: %s", oid, host, err)
+        return None
+    finally:
+        sock.close()
+
+
+def host_da_fila(cfg: Config, fila: str) -> str | None:
+    """IP do equipamento por trás da fila; None para filas locais/ilegíveis."""
+    uri = device_uri_da_fila(fila)
+    if not uri:
+        return None
+    parsed = parse_device_uri(uri)
+    if not parsed:
+        return None
+    scheme, host, _ = parsed
+    if scheme not in REDE_SCHEMES or not host:
+        return None
+    return resolver_host(host, cfg.reachability_timeout)
+
+
+def paginas_do_motor(cfg: Config, fila: str) -> int | None:
+    """Contador de vida do motor da impressora; None se não for legível."""
+    if not cfg.snmp_community:
+        return None
+    host = host_da_fila(cfg, fila)
+    if host is None:
+        return None
+    return snmp_get_int(
+        host, OID_PAGINAS_MOTOR, cfg.snmp_community, cfg.reachability_timeout
+    )
+
+
+# Teto de espera pelo motor terminar de cuspir papel DEPOIS que o job sai da
+# fila CUPS. Numa fila `socket://` o job some da fila assim que os bytes entram
+# no socket — a impressora ainda está imprimindo. Numa fila IPP o contador já
+# está em dia e isso resolve na primeira leitura estável (~2s).
+ESPERA_MOTOR_ESTABILIZAR = 60
+
+
+def folhas_gastas_pelo_motor(
+    cfg: Config, fila: str, motor_antes: int | None, folhas_esperadas: int
+) -> int | None:
+    """Folhas que o motor gastou no job; None se o contador não for legível.
+
+    Espera o contador PARAR de subir antes de concluir, senão leríamos no meio
+    de um despejo de lixo e o número sairia pequeno demais. Só desiste cedo
+    quando o contador está estável E já alcançou o esperado.
+
+    A leitura acontece com o job já fora da fila CUPS (transmissão encerrada),
+    e é um datagrama UDP — não é o tipo de conexão que o df1b9f8 proibiu durante
+    a transmissão.
+    """
+    if motor_antes is None:
+        return None
+    limite = time.monotonic() + ESPERA_MOTOR_ESTABILIZAR
+    anterior: int | None = None
+    while True:
+        atual = paginas_do_motor(cfg, fila)
+        if atual is None:
+            return None
+        if atual == anterior and atual - motor_antes >= folhas_esperadas:
+            return atual - motor_antes
+        if time.monotonic() >= limite:
+            log.warning(
+                "Fila %s: contador do motor ainda instável após %ss (delta=%s, "
+                "esperado=%s)",
+                fila,
+                ESPERA_MOTOR_ESTABILIZAR,
+                atual - motor_antes,
+                folhas_esperadas,
+            )
+            return atual - motor_antes
+        anterior = atual
+        time.sleep(2)
+
+
 # --- Conferência do que a impressora REALMENTE imprimiu ----------------------
 #
 # `lpstat -o` não prova sucesso, e o `job-state` do cupsd local também não: o
@@ -1100,16 +1289,47 @@ def desfecho_do_job(cfg: Config, job_id: str) -> dict | None:
     return desfecho
 
 
-def conferir_folhas(cfg: Config, job_id: str, folhas_esperadas: int) -> str | None:
+def conferir_folhas(
+    cfg: Config,
+    job_id: str,
+    folhas_esperadas: int,
+    folhas_motor: int | None = None,
+) -> str | None:
     """Descreve a falha se a impressora não produziu o esperado; None se OK.
 
-    Duas evidências de estrago, ambas vistas nos episódios reais de lixo:
-    o job terminou `canceled`/`aborted`, ou a contagem de folhas divergiu do
-    pedido. Leitura indisponível => None (não acusamos falha sem prova).
+    Evidências, da mais forte para a mais fraca:
+
+    1. `folhas_motor` — delta do contador de vida do motor (ver
+       `paginas_do_motor`). É folha que realmente passou pelo mecanismo, então
+       vale para qualquer fila, inclusive `socket://`, onde não existe contagem
+       vinda do equipamento por IPP.
+    2. o job terminou `canceled`/`aborted` no cupsd.
+    3. `job-media-sheets-completed` do cupsd local. Mais fraco do que parece: no
+       job 211 o cupsd registrou 1 folha para um job em que a impressora
+       contabilizou 11. Serve para confirmar, nunca como única fonte.
+
+    Sem nenhuma leitura => None: não acusamos falha sem prova.
+
+    Nota deliberada sobre papel: o veredito olha SÓ quantas folhas saíram. Se a
+    bandeja zerar logo depois da última folha correta, o delta bate com o
+    esperado e o pedido segue IMPRESSO — acabar o papel no fim de um job
+    completo não é falha do job.
     """
+    if folhas_motor is not None and folhas_motor != folhas_esperadas:
+        return (
+            f"o motor da impressora gastou {folhas_motor} folha(s) para um pedido "
+            f"de {folhas_esperadas}"
+            + (
+                " — provável despejo de lixo binário"
+                if folhas_motor > folhas_esperadas
+                else " — impressão incompleta"
+            )
+        )
+
     desfecho = desfecho_do_job(cfg, job_id)
     if desfecho is None:
-        log.debug("Job %s: desfecho ilegível — mantendo o veredito da fila", job_id)
+        if folhas_motor is None:
+            log.debug("Job %s: desfecho ilegível — mantendo o veredito da fila", job_id)
         return None
 
     estado = desfecho["job_state"]
@@ -1277,6 +1497,11 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
                 )
                 continue
 
+            # Marco zero do contador do motor, lido ANTES de submeter: o delta
+            # até o fim do job é o papel que a impressora de fato gastou. Aqui
+            # ainda não há job em voo, então a regra do df1b9f8 é respeitada.
+            motor_antes = paginas_do_motor(cfg, fila)
+
             try:
                 job_id = enviar_para_impressora(fila, caminho, cfg.lp_options)
             except FalhaPreSubmissao as err:
@@ -1300,10 +1525,14 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
             )
 
             if aguardar_conclusao(cfg, fila, job_id):
-                # Sair da fila não prova que saiu certo: conferimos com o cupsd
-                # o que a impressora de fato produziu antes de cobrar do cliente.
+                # Sair da fila não prova que saiu certo: conferimos o que a
+                # impressora de fato produziu antes de cobrar do cliente.
+                folhas_esperadas = paginas_reais * quantidade_copias
+                folhas_motor = folhas_gastas_pelo_motor(
+                    cfg, fila, motor_antes, folhas_esperadas
+                )
                 problema = conferir_folhas(
-                    cfg, job_id, paginas_reais * quantidade_copias
+                    cfg, job_id, folhas_esperadas, folhas_motor
                 )
                 if problema:
                     log.error(

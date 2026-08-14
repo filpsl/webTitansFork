@@ -130,6 +130,7 @@ em `IMPRIMINDO` por mais de `STUCK_TIMEOUT` (padrão 15 min) voltam sozinhos par
 | `PRINT_TIMEOUT` | não | `180` | Segundos de espera pela conclusão do job |
 | `STUCK_TIMEOUT` | não | `900` | Segundos até re-filar um pedido travado em IMPRIMINDO |
 | `REACHABILITY_TIMEOUT` | não | `3` | Timeout (s) da checagem de alcançabilidade do destino de filas de rede antes de submeter |
+| `SNMP_COMMUNITY` | não | `public` | Community SNMP v1 de leitura, usada só para o contador de páginas do motor (conferência do que a impressora realmente imprimiu). Vazia desliga a conferência por SNMP |
 | `LP_OPTIONS` | não | `fit-to-page` | Opções `-o` do `lp` (tokens separados por espaço). Padrão escala à área imprimível e auto-rotaciona paisagem, evitando PDFs deitados cortados. Vazio = sem opções |
 | `TELEGRAM_BOT_TOKEN` | não | — | Token do Bot do Telegram; ativa o aviso de saúde da impressora (mesma env usada por `/api/kiosk/help` no site). Ausente = a transição só é logada, nada quebra |
 | `TELEGRAM_CHAT_ID` | não | — | Chat/grupo do Telegram que recebe o aviso. Ausente = idem acima |

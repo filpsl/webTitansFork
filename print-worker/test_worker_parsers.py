@@ -377,6 +377,146 @@ class ConferirFolhasTests(unittest.TestCase):
         self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-198", 1))
 
 
+class SnmpTests(unittest.TestCase):
+    """Codificação/decodificação BER do GET SNMP v1 mínimo."""
+
+    # Respostas reais da 135w, capturadas com o cliente mínimo.
+    RESP_CONTADOR = bytes.fromhex(
+        "302c02010004067075626c6963a21f0201010201000201003014301206"
+        "0c2b060102012b0a020104010141020638"
+    )
+    # Resposta de prtInputCurrentLevel: serve aqui como caso de INTEGER
+    # negativo, que é onde um decoder ingênuo devolveria 253 em vez de -3.
+    RESP_INTEIRO_NEGATIVO = bytes.fromhex(
+        "302b02010004067075626c6963a21e0201010201000201003013301106"
+        "0c2b060102012b0802010a01010201fd"
+    )
+
+    def test_contador32_da_impressora(self) -> None:
+        """Counter32 (tag 0x41) = 0x0638 = 1592 páginas."""
+        self.assertEqual(worker._valor_do_varbind(self.RESP_CONTADOR), 1592)
+
+    def test_inteiro_negativo_nao_vira_positivo(self) -> None:
+        """INTEGER -3 tem de sair -3, não 253 (byte 0xfd lido sem sinal)."""
+        self.assertEqual(worker._valor_do_varbind(self.RESP_INTEIRO_NEGATIVO), -3)
+
+    def test_oid_codifica_primeiros_dois_arcos_juntos(self) -> None:
+        self.assertEqual(worker._ber_oid("1.3.6.1")[2:], b"\x2b\x06\x01")
+
+    def test_oid_codifica_arco_grande_em_base128(self) -> None:
+        self.assertEqual(worker._ber_oid("1.3.9999")[2:], b"\x2b\xce\x0f")
+
+    def test_erro_no_pdu_vira_none(self) -> None:
+        """error-status != 0 não pode virar um número inventado."""
+        corrompida = bytearray(self.RESP_CONTADOR)
+        corrompida[20] = 0x02  # valor de error-status: 0 -> noSuchName
+        self.assertIsNone(worker._valor_do_varbind(bytes(corrompida)))
+
+
+class FolhasGastasPeloMotorTests(unittest.TestCase):
+    """`folhas_gastas_pelo_motor`: delta do contador, esperando estabilizar."""
+
+    class _Cfg:
+        snmp_community = "public"
+        reachability_timeout = 3
+
+    def _com_leituras(self, leituras):
+        """Enfileira retornos de `paginas_do_motor` e anula o sleep.
+
+        Esgotada a fila, repete a última leitura — o contador de uma impressora
+        parada não muda mais.
+        """
+        seq = list(leituras)
+        ultima = leituras[-1]
+        original = worker.paginas_do_motor
+        worker.paginas_do_motor = lambda cfg, fila: seq.pop(0) if seq else ultima
+        self.addCleanup(lambda: setattr(worker, "paginas_do_motor", original))
+        sono = worker.time.sleep
+        worker.time.sleep = lambda _s: None
+        self.addCleanup(lambda: setattr(worker.time, "sleep", sono))
+
+    def test_job_limpo_delta_bate(self) -> None:
+        self._com_leituras([1592, 1593, 1593])
+        self.assertEqual(
+            worker.folhas_gastas_pelo_motor(self._Cfg(), "Titans_SPL", 1592, 1), 1
+        )
+
+    def test_espera_o_motor_parar_de_subir(self) -> None:
+        """Ler no meio do despejo daria 3; o certo é esperar chegar a 11."""
+        leituras = [1592, 1595, 1599, 1603, 1603]
+        self._com_leituras(leituras)
+        self.assertEqual(
+            worker.folhas_gastas_pelo_motor(self._Cfg(), "Titans_SPL", 1592, 2), 11
+        )
+
+    def test_sem_marco_inicial_nao_conclui_nada(self) -> None:
+        self._com_leituras([1592, 1592])
+        self.assertIsNone(
+            worker.folhas_gastas_pelo_motor(self._Cfg(), "Titans_SPL", None, 1)
+        )
+
+    def test_contador_ilegivel_vira_none(self) -> None:
+        self._com_leituras([None])
+        self.assertIsNone(
+            worker.folhas_gastas_pelo_motor(self._Cfg(), "Titans_SPL", 1592, 1)
+        )
+
+
+class ConferirFolhasMotorTests(unittest.TestCase):
+    """O contador do motor manda no veredito — inclusive em fila socket."""
+
+    def _sem_desfecho_do_cupsd(self):
+        """Fila socket: o cupsd não tem contagem vinda do equipamento."""
+        original = worker.desfecho_do_job
+        worker.desfecho_do_job = lambda cfg, job_id: None
+        self.addCleanup(lambda: setattr(worker, "desfecho_do_job", original))
+
+    def test_delta_bate_nao_acusa(self) -> None:
+        self._sem_desfecho_do_cupsd()
+        self.assertIsNone(
+            worker.conferir_folhas(None, "Titans_SPL-215", 2, folhas_motor=2)
+        )
+
+    def test_papel_acaba_depois_da_ultima_folha_nao_e_erro(self) -> None:
+        """Garantia pedida: bandeja zerar no fim de um job COMPLETO não é falha.
+
+        O veredito só olha folhas produzidas — o estado do papel depois não
+        entra na conta. Delta == esperado => IMPRESSO, bandeja vazia ou não.
+        """
+        self._sem_desfecho_do_cupsd()
+        self.assertIsNone(
+            worker.conferir_folhas(None, "Titans_SPL-216", 3, folhas_motor=3)
+        )
+
+    def test_lixo_queimando_a_bandeja_acusa(self) -> None:
+        """Caso real do job 211: 11 folhas para um pedido de 2."""
+        self._sem_desfecho_do_cupsd()
+        problema = worker.conferir_folhas(None, "Titans_SPL-211", 2, folhas_motor=11)
+        self.assertIsNotNone(problema)
+        self.assertIn("11 folha(s)", problema)
+        self.assertIn("lixo binário", problema)
+
+    def test_impressao_incompleta_acusa_sem_falar_em_lixo(self) -> None:
+        self._sem_desfecho_do_cupsd()
+        problema = worker.conferir_folhas(None, "Titans_SPL-217", 5, folhas_motor=2)
+        self.assertIsNotNone(problema)
+        self.assertIn("incompleta", problema)
+        self.assertNotIn("lixo binário", problema)
+
+    def test_motor_ilegivel_cai_para_o_cupsd(self) -> None:
+        """Sem SNMP, o veredito antigo (fila IPP) continua valendo."""
+        original = worker.desfecho_do_job
+        worker.desfecho_do_job = lambda cfg, job_id: {
+            "job_state": worker.JOB_COMPLETED,
+            "job_state_reasons": ["processing-to-stop-point"],
+            "folhas": 2,
+        }
+        self.addCleanup(lambda: setattr(worker, "desfecho_do_job", original))
+        problema = worker.conferir_folhas(None, "Titans_Laser-196", 1, folhas_motor=None)
+        self.assertIsNotNone(problema)
+        self.assertIn("2 folha(s)", problema)
+
+
 class AlvoIppDaFilaTests(unittest.TestCase):
     """`alvo_ipp_da_fila`: para onde vão as consultas de saúde de cada fila."""
 

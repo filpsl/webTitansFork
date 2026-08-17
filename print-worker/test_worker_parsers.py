@@ -340,7 +340,7 @@ class ConferirFolhasTests(unittest.TestCase):
         self._com_desfecho(
             {"job_state": worker.JOB_COMPLETED, "job_state_reasons": [], "folhas": 4}
         )
-        self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-192", 4))
+        self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-192", 4).problema)
 
     def test_folhas_a_mais_acusa(self) -> None:
         self._com_desfecho(
@@ -350,7 +350,7 @@ class ConferirFolhasTests(unittest.TestCase):
                 "folhas": 2,
             }
         )
-        problema = worker.conferir_folhas(None, "Titans_Laser-196", 1)
+        problema = worker.conferir_folhas(None, "Titans_Laser-196", 1).problema
         self.assertIsNotNone(problema)
         self.assertIn("2 folha(s)", problema)
 
@@ -362,20 +362,20 @@ class ConferirFolhasTests(unittest.TestCase):
                 "folhas": 1,
             }
         )
-        problema = worker.conferir_folhas(None, "Titans_Laser-182", 1)
+        problema = worker.conferir_folhas(None, "Titans_Laser-182", 1).problema
         self.assertIsNotNone(problema)
         self.assertIn("canceled", problema)
 
     def test_leitura_indisponivel_nao_acusa(self) -> None:
         """Sem prova, degrada para o veredito da fila (comportamento anterior)."""
         self._com_desfecho(None)
-        self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-196", 1))
+        self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-196", 1).problema)
 
     def test_folhas_ausentes_com_estado_ok_nao_acusa(self) -> None:
         self._com_desfecho(
             {"job_state": worker.JOB_COMPLETED, "job_state_reasons": [], "folhas": None}
         )
-        self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-198", 1))
+        self.assertIsNone(worker.conferir_folhas(None, "Titans_Laser-198", 1).problema)
 
 
 class SnmpTests(unittest.TestCase):
@@ -414,52 +414,233 @@ class SnmpTests(unittest.TestCase):
         self.assertIsNone(worker._valor_do_varbind(bytes(corrompida)))
 
 
-class FolhasGastasPeloMotorTests(unittest.TestCase):
-    """`folhas_gastas_pelo_motor`: delta do contador, esperando estabilizar."""
+class ResolverHostTests(unittest.TestCase):
+    """IP literal não pode virar consulta de rede."""
+
+    def _sem_subprocesso(self):
+        """Qualquer subprocesso aqui é o bug: `getent hosts <ip>` sai na rede."""
+        original = worker.subprocess.run
+
+        def proibido(*args, **kwargs):
+            raise AssertionError(f"resolveu IP literal por subprocesso: {args}")
+
+        worker.subprocess.run = proibido
+        self.addCleanup(lambda: setattr(worker.subprocess, "run", original))
+
+    def test_ipv4_literal_devolve_a_si_mesmo(self) -> None:
+        self._sem_subprocesso()
+        self.assertEqual(worker.resolver_host("10.74.1.109", 3), "10.74.1.109")
+
+    def test_ipv6_literal_devolve_a_si_mesmo(self) -> None:
+        self._sem_subprocesso()
+        self.assertEqual(worker.resolver_host("::1", 3), "::1")
+
+
+class BandejaVaziaTests(unittest.TestCase):
+    """Valores medidos na 135w (ver OID_NIVEL_BANDEJA)."""
+
+    def test_com_papel(self) -> None:
+        self.assertIs(worker.bandeja_vazia(-3, 0), False)
+
+    def test_vazia(self) -> None:
+        self.assertIs(worker.bandeja_vazia(0, 11), True)
+
+    def test_sem_leitura_nenhuma(self) -> None:
+        self.assertIsNone(worker.bandeja_vazia(None, None))
+
+    def test_so_o_status_critico(self) -> None:
+        self.assertIs(worker.bandeja_vazia(None, 11), True)
+        self.assertIs(worker.bandeja_vazia(None, 0), False)
+
+
+class DecidirEsperaTests(unittest.TestCase):
+    """Política da espera pelo motor. Falta de papel só ESTENDE a paciência."""
+
+    TOLERANCIA = 600
+
+    def _decidir(self, **kwargs) -> str:
+        args = {
+            "delta": 0,
+            "folhas_esperadas": 2,
+            "estavel": False,
+            "vazia": False,
+            "s_sem_progresso": 0.0,
+            "s_sem_papel": 0.0,
+            "tolerancia_sem_papel": self.TOLERANCIA,
+        }
+        args.update(kwargs)
+        return worker.decidir_espera(**args)
+
+    def test_alcancou_e_parou_conclui(self) -> None:
+        self.assertEqual(self._decidir(delta=2, estavel=True), "concluido")
+
+    def test_alcancou_mas_ainda_subindo_espera(self) -> None:
+        """Despejo de lixo em curso: ler agora daria um número pequeno demais."""
+        self.assertEqual(self._decidir(delta=2, estavel=False), "continuar")
+
+    def test_job_grande_demorando_nao_e_reprovado(self) -> None:
+        """35 folhas levam ~100s: enquanto o contador sobe, a espera continua."""
+        self.assertEqual(
+            self._decidir(delta=26, folhas_esperadas=35, s_sem_progresso=3.0),
+            "continuar",
+        )
+
+    def test_sem_papel_dentro_da_tolerancia_continua(self) -> None:
+        """Alguém pode repor e o job termina — o pedido segue IMPRIMINDO."""
+        self.assertEqual(
+            self._decidir(delta=1, vazia=True, s_sem_progresso=300.0, s_sem_papel=300.0),
+            "continuar",
+        )
+
+    def test_sem_papel_alem_da_tolerancia_desiste(self) -> None:
+        self.assertEqual(
+            self._decidir(delta=1, vazia=True, s_sem_progresso=700.0, s_sem_papel=600.0),
+            "desistir",
+        )
+
+    def test_parado_com_papel_desiste_no_prazo_curto(self) -> None:
+        """Cancelado no painel/atolamento: nada explica a parada."""
+        self.assertEqual(self._decidir(delta=1, s_sem_progresso=60.0), "desistir")
+        self.assertEqual(self._decidir(delta=1, s_sem_progresso=59.0), "continuar")
+
+    def test_papel_acaba_depois_da_ultima_folha_conclui(self) -> None:
+        """Bandeja vazia com o pedido completo não impede a conclusão."""
+        self.assertEqual(
+            self._decidir(delta=2, estavel=True, vazia=True, s_sem_papel=1.0),
+            "concluido",
+        )
+
+
+class AguardarFolhasDoMotorTests(unittest.TestCase):
+    """`aguardar_folhas_do_motor`: laço de sondagem sobre a política acima."""
 
     class _Cfg:
         snmp_community = "public"
         reachability_timeout = 3
+        paper_wait_timeout = 600
 
-    def _com_leituras(self, leituras):
-        """Enfileira retornos de `paginas_do_motor` e anula o sleep.
+    class _Relogio:
+        """Relógio falso: cada sleep avança o tempo, sem esperar de verdade."""
 
-        Esgotada a fila, repete a última leitura — o contador de uma impressora
-        parada não muda mais.
+        def __init__(self) -> None:
+            self.agora = 0.0
+
+        def monotonic(self) -> float:
+            return self.agora
+
+        def dormir(self, segundos: float) -> None:
+            self.agora += segundos
+
+    def _com_snmp(self, contador, bandeja=(-3, 0)):
+        """Enfileira leituras do contador; a bandeja é fixa (nível, status).
+
+        Esgotada a fila, repete a última: contador de impressora parada não muda.
+        `bandeja` pode ser uma lista, para simular reposição no meio da espera.
         """
-        seq = list(leituras)
-        ultima = leituras[-1]
-        original = worker.paginas_do_motor
-        worker.paginas_do_motor = lambda cfg, fila: seq.pop(0) if seq else ultima
-        self.addCleanup(lambda: setattr(worker, "paginas_do_motor", original))
-        sono = worker.time.sleep
-        worker.time.sleep = lambda _s: None
+        seq = list(contador)
+        ultima = contador[-1]
+        bandejas = list(bandeja) if isinstance(bandeja, list) else [bandeja]
+        ciclo = [0]  # cada leitura do contador abre um ciclo de sondagem
+
+        def falso(host, oid, community, timeout):
+            if oid == worker.OID_PAGINAS_MOTOR:
+                ciclo[0] += 1
+                return seq.pop(0) if seq else ultima
+            atual = bandejas[min(ciclo[0] - 1, len(bandejas) - 1)]
+            return atual[0] if oid == worker.OID_NIVEL_BANDEJA else atual[1]
+
+        original_snmp = worker.snmp_get_int
+        worker.snmp_get_int = falso
+        self.addCleanup(lambda: setattr(worker, "snmp_get_int", original_snmp))
+        original_host = worker.host_da_fila
+        worker.host_da_fila = lambda cfg, fila: "10.74.1.109"
+        self.addCleanup(lambda: setattr(worker, "host_da_fila", original_host))
+        relogio = self._Relogio()
+        mono, sono = worker.time.monotonic, worker.time.sleep
+        worker.time.monotonic = relogio.monotonic
+        worker.time.sleep = relogio.dormir
+        self.addCleanup(lambda: setattr(worker.time, "monotonic", mono))
         self.addCleanup(lambda: setattr(worker.time, "sleep", sono))
 
     def test_job_limpo_delta_bate(self) -> None:
-        self._com_leituras([1592, 1593, 1593])
+        self._com_snmp([1593, 1593])
         self.assertEqual(
-            worker.folhas_gastas_pelo_motor(self._Cfg(), "Titans_SPL", 1592, 1), 1
+            worker.aguardar_folhas_do_motor(self._Cfg(), "Titans_SPL", 1592, 1),
+            (1, "concluido"),
         )
 
     def test_espera_o_motor_parar_de_subir(self) -> None:
         """Ler no meio do despejo daria 3; o certo é esperar chegar a 11."""
-        leituras = [1592, 1595, 1599, 1603, 1603]
-        self._com_leituras(leituras)
+        self._com_snmp([1595, 1599, 1603, 1603])
         self.assertEqual(
-            worker.folhas_gastas_pelo_motor(self._Cfg(), "Titans_SPL", 1592, 2), 11
+            worker.aguardar_folhas_do_motor(self._Cfg(), "Titans_SPL", 1592, 2),
+            (11, "concluido"),
+        )
+
+    def test_leitura_falha_no_meio_nao_apaga_o_delta(self) -> None:
+        """Regressão do 44C56F93: era aqui que a medição se perdia inteira."""
+        self._com_snmp([1593, None, 1593, 1593])
+        self.assertEqual(
+            worker.aguardar_folhas_do_motor(self._Cfg(), "Titans_SPL", 1592, 1),
+            (1, "concluido"),
+        )
+
+    def test_snmp_mudo_desde_o_comeco_e_sem_leitura(self) -> None:
+        self._com_snmp([None])
+        self.assertEqual(
+            worker.aguardar_folhas_do_motor(self._Cfg(), "Titans_SPL", 1592, 1),
+            (None, "sem_leitura"),
         )
 
     def test_sem_marco_inicial_nao_conclui_nada(self) -> None:
-        self._com_leituras([1592, 1592])
-        self.assertIsNone(
-            worker.folhas_gastas_pelo_motor(self._Cfg(), "Titans_SPL", None, 1)
+        self._com_snmp([1592])
+        self.assertEqual(
+            worker.aguardar_folhas_do_motor(self._Cfg(), "Titans_SPL", None, 1),
+            (None, "sem_leitura"),
         )
 
-    def test_contador_ilegivel_vira_none(self) -> None:
-        self._com_leituras([None])
-        self.assertIsNone(
-            worker.folhas_gastas_pelo_motor(self._Cfg(), "Titans_SPL", 1592, 1)
+    def test_papel_nao_reposto_devolve_o_que_saiu(self) -> None:
+        """Teste de 1 folha: sai 1 de 2, bandeja vazia, ninguém repõe."""
+        self._com_snmp([1593], bandeja=(0, 11))
+        self.assertEqual(
+            worker.aguardar_folhas_do_motor(self._Cfg(), "Titans_SPL", 1592, 2),
+            (1, "sem_papel"),
+        )
+
+    def test_papel_reposto_a_tempo_conclui(self) -> None:
+        """O caso que gerou 35 folhas reimpressas: repor tem de salvar o job."""
+        self._com_snmp(
+            [1593, 1593, 1593, 1594, 1594],
+            bandeja=[(0, 11), (0, 11), (-3, 0), (-3, 0), (-3, 0)],
+        )
+        self.assertEqual(
+            worker.aguardar_folhas_do_motor(self._Cfg(), "Titans_SPL", 1592, 2),
+            (2, "concluido"),
+        )
+
+    def test_espera_longa_por_papel_nao_estoura_o_prazo_curto(self) -> None:
+        """Reposição depois de 80s não pode cair no prazo de parada sem explicação.
+
+        O relógio curto (60s) só corre com papel na bandeja; senão a reposição
+        chegaria com ele já estourado e o pedido cairia em ERRO no ato.
+        """
+        vazia, cheia = (0, 11), (-3, 0)
+        self._com_snmp(
+            # 80s de bandeja vazia, alguns ciclos de aquecimento depois da
+            # reposição (contador ainda parado) e só então a última folha.
+            [1593] * 40 + [1593] * 5 + [1594, 1594],
+            bandeja=[vazia] * 40 + [cheia],
+        )
+        self.assertEqual(
+            worker.aguardar_folhas_do_motor(self._Cfg(), "Titans_SPL", 1592, 2),
+            (2, "concluido"),
+        )
+
+    def test_parado_com_papel_desiste(self) -> None:
+        self._com_snmp([1593])
+        self.assertEqual(
+            worker.aguardar_folhas_do_motor(self._Cfg(), "Titans_SPL", 1592, 2),
+            (1, "parado"),
         )
 
 
@@ -475,7 +656,7 @@ class ConferirFolhasMotorTests(unittest.TestCase):
     def test_delta_bate_nao_acusa(self) -> None:
         self._sem_desfecho_do_cupsd()
         self.assertIsNone(
-            worker.conferir_folhas(None, "Titans_SPL-215", 2, folhas_motor=2)
+            worker.conferir_folhas(None, "Titans_SPL-215", 2, folhas_motor=2).problema
         )
 
     def test_papel_acaba_depois_da_ultima_folha_nao_e_erro(self) -> None:
@@ -486,22 +667,55 @@ class ConferirFolhasMotorTests(unittest.TestCase):
         """
         self._sem_desfecho_do_cupsd()
         self.assertIsNone(
-            worker.conferir_folhas(None, "Titans_SPL-216", 3, folhas_motor=3)
+            worker.conferir_folhas(None, "Titans_SPL-216", 3, folhas_motor=3).problema
         )
 
     def test_lixo_queimando_a_bandeja_acusa(self) -> None:
         """Caso real do job 211: 11 folhas para um pedido de 2."""
         self._sem_desfecho_do_cupsd()
-        problema = worker.conferir_folhas(None, "Titans_SPL-211", 2, folhas_motor=11)
+        problema = worker.conferir_folhas(None, "Titans_SPL-211", 2, folhas_motor=11).problema
         self.assertIsNotNone(problema)
         self.assertIn("11 folha(s)", problema)
         self.assertIn("lixo binário", problema)
 
     def test_impressao_incompleta_acusa_sem_falar_em_lixo(self) -> None:
         self._sem_desfecho_do_cupsd()
-        problema = worker.conferir_folhas(None, "Titans_SPL-217", 5, folhas_motor=2)
+        problema = worker.conferir_folhas(None, "Titans_SPL-217", 5, folhas_motor=2).problema
         self.assertIsNotNone(problema)
         self.assertIn("incompleta", problema)
+        self.assertNotIn("lixo binário", problema)
+
+    def test_cupsd_sozinho_nao_aprova(self) -> None:
+        """Regressão do 44C56F93: o cupsd registrou 2 folhas num job que deu 1.
+
+        Em fila `socket://` esse número é o que o filtro empurrou para o socket,
+        não o que a impressora fez. Sem o motor, o desfecho é "não verificado" —
+        nunca "saiu certo".
+        """
+        original = worker.desfecho_do_job
+        worker.desfecho_do_job = lambda cfg, job_id: {
+            "job_state": worker.JOB_COMPLETED,
+            "job_state_reasons": ["processing-to-stop-point"],
+            "folhas": 2,
+        }
+        self.addCleanup(lambda: setattr(worker, "desfecho_do_job", original))
+        veredito = worker.conferir_folhas(None, "Titans_SPL-224", 2, folhas_motor=None)
+        self.assertIsNone(veredito.problema)
+        self.assertFalse(veredito.verificado)
+
+    def test_motor_aprova_de_verdade(self) -> None:
+        self._sem_desfecho_do_cupsd()
+        self.assertTrue(
+            worker.conferir_folhas(None, "Titans_SPL-215", 2, folhas_motor=2).verificado
+        )
+
+    def test_sem_papel_tem_motivo_proprio(self) -> None:
+        self._sem_desfecho_do_cupsd()
+        problema = worker.conferir_folhas(
+            None, "Titans_SPL-224", 2, folhas_motor=1, sem_papel=True
+        ).problema
+        self.assertIn("sem papel", problema)
+        self.assertIn("1 de 2", problema)
         self.assertNotIn("lixo binário", problema)
 
     def test_motor_ilegivel_cai_para_o_cupsd(self) -> None:
@@ -513,7 +727,7 @@ class ConferirFolhasMotorTests(unittest.TestCase):
             "folhas": 2,
         }
         self.addCleanup(lambda: setattr(worker, "desfecho_do_job", original))
-        problema = worker.conferir_folhas(None, "Titans_Laser-196", 1, folhas_motor=None)
+        problema = worker.conferir_folhas(None, "Titans_Laser-196", 1, folhas_motor=None).problema
         self.assertIsNotNone(problema)
         self.assertIn("2 folha(s)", problema)
 

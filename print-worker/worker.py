@@ -14,6 +14,7 @@ Configuração por variáveis de ambiente — ver .env.example.
 from __future__ import annotations
 
 import io
+import ipaddress
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ import tempfile
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -66,7 +68,13 @@ class Config:
         self.printer_name_fallback = os.environ.get("PRINTER_NAME_FALLBACK", "").strip()
         self.poll_interval = int(os.environ.get("POLL_INTERVAL", "10"))
         self.print_timeout = int(os.environ.get("PRINT_TIMEOUT", "180"))
-        self.stuck_timeout = int(os.environ.get("STUCK_TIMEOUT", "900"))
+        # Quanto tempo o pedido espera, ainda em IMPRIMINDO, por alguém repor o
+        # papel que acabou no meio do job (ver `decidir_espera`).
+        self.paper_wait_timeout = int(os.environ.get("PAPER_WAIT_TIMEOUT", "600"))
+        # Precisa caber PRINT_TIMEOUT + PAPER_WAIT_TIMEOUT + a folga da espera
+        # parada (60s): um restart do worker dentro dessa janela devolveria o
+        # pedido para PAGO e o reimprimiria duplicado.
+        self.stuck_timeout = int(os.environ.get("STUCK_TIMEOUT", "1200"))
         self.reachability_timeout = int(os.environ.get("REACHABILITY_TIMEOUT", "3"))
         # Community SNMP v1 de leitura, usada só para o contador de páginas do
         # motor (ver `paginas_do_motor`). Vazia desliga a conferência por SNMP.
@@ -263,9 +271,19 @@ def parse_device_uri(uri: str) -> tuple[str, str, int] | None:
 def resolver_host(host: str, timeout: int) -> str | None:
     """Resolve `host` (mDNS `.local` incluído) para um IP; None se não resolver.
 
-    Tenta `getent hosts` (cobre mDNS quando o nsswitch tem `mdns`) e, se falhar,
-    `avahi-resolve-host-name -4`. Um IP literal passa direto pelo getent.
+    IP literal é devolvido como está, sem subprocesso: `getent hosts <ip>` faz
+    resolução REVERSA, que sai na rede (mDNS/DNS) e falha em blip de Wi-Fi. Era
+    o caminho por onde a leitura do contador do motor se perdia no meio de um
+    job (`socket://10.74.1.109:9100` — o IP já estava ali) e por onde a fila
+    virava INALCANCAVEL sem a impressora ter saído do ar.
+
+    Nome: tenta `getent hosts` (cobre mDNS quando o nsswitch tem `mdns`) e, se
+    falhar, `avahi-resolve-host-name -4`.
     """
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        pass  # não é IP literal: resolve de verdade
     try:
         proc = subprocess.run(
             ["getent", "hosts", host],
@@ -944,6 +962,28 @@ def falhar_pedido(
     )
 
 
+def avisar_sem_conferencia(cfg: Config, pedido: dict, fila: str, job_id: str) -> None:
+    """Avisa que o pedido saiu como IMPRESSO SEM prova de quanto papel saiu.
+
+    Acontece quando o contador do motor não pôde ser lido (SNMP mudo, community
+    errada, impressora trocada). Marcar ERRO aqui seria pior: reprovaria um
+    pedido provavelmente correto e custaria uma reimpressão. O pedido segue
+    Pronto e a equipe fica sabendo que aquele ficou sem conferência.
+    """
+    enviar_telegram(
+        cfg,
+        "\n".join(
+            [
+                "⚠️ Pedido impresso SEM conferência",
+                f"Protocolo: {protocolo_do_pedido(pedido['id'])}",
+                "Motivo: não foi possível ler o contador do motor da impressora",
+                f"Fila: {fila} (job {job_id})",
+                "O pedido foi marcado como Pronto — confira o papel se houver dúvida.",
+            ]
+        ),
+    )
+
+
 def deve_segurar_pedidos(cfg: Config, estado_saude: str | None) -> bool:
     """True quando o worker NÃO deve reivindicar pedidos neste ciclo.
 
@@ -999,6 +1039,10 @@ class Heartbeat:
         self._ultimo_publicado: str | None = None
         self._ultimo_toner_baixo = False
         self._problema_pendente: str | None = None
+        # Falha física vista pelo próprio laço de impressão (SNMP), que enxerga
+        # o que a sondagem leve não enxerga em fila socket://. Escrito por outra
+        # thread: str é atribuição atômica, não precisa de lock.
+        self._fisico_do_job: str | None = None
         self._semear_memoria()
 
     def _semear_memoria(self) -> None:
@@ -1032,6 +1076,16 @@ class Heartbeat:
             self._imprimindo.set()
         else:
             self._imprimindo.clear()
+            self._fisico_do_job = None
+
+    def reportar_fisico(self, estado: str | None) -> None:
+        """Falha física observada pelo laço de espera do job (SNMP direto).
+
+        Em fila `socket://` o cupsd local não sabe da bandeja, então sem isto o
+        kiosk mostraria IMPRIMINDO enquanto o pedido espera papel — e ninguém
+        saberia que basta repor para o job terminar. `None` limpa.
+        """
+        self._fisico_do_job = estado
 
     def _publicar(self) -> None:
         if self._imprimindo.is_set():
@@ -1040,6 +1094,8 @@ class Heartbeat:
             # mantém a última leitura completa, que o loop principal só consulta
             # entre pedidos; o primeiro heartbeat sem job em voo a renova.
             estado, detalhes = saude_pela_fila_local(self._cfg, self._cfg.printer_name)
+            # O laço de espera lê a bandeja por SNMP e vence a sondagem leve.
+            estado = self._fisico_do_job or estado
         else:
             estado, detalhes = saude_da_impressora(self._cfg, self._cfg.printer_name)
             self.estado_saude = estado
@@ -1131,6 +1187,11 @@ def enviar_para_impressora(fila: str, caminho: str, opcoes: list[str]) -> str:
 # continua valendo, porque nenhuma delas acontece durante o job.
 
 OID_PAGINAS_MOTOR = "1.3.6.1.2.1.43.10.2.1.4.1.1"  # prtMarkerLifeCount
+# Sensor da bandeja, medido na 135w: com papel lê nível -3 ("tem papel, quanto é
+# desconhecido") e status 0; vazia lê nível 0 e status 11 (bit 8 = alerta
+# crítico). Serve só para ESTENDER a paciência da espera — ver `decidir_espera`.
+OID_NIVEL_BANDEJA = "1.3.6.1.2.1.43.8.2.1.10.1.1"  # prtInputCurrentLevel
+OID_STATUS_BANDEJA = "1.3.6.1.2.1.43.8.2.1.11.1.1"  # prtInputStatus
 SNMP_PORTA = 161
 
 
@@ -1256,48 +1317,177 @@ def paginas_do_motor(cfg: Config, fila: str) -> int | None:
     )
 
 
-# Teto de espera pelo motor terminar de cuspir papel DEPOIS que o job sai da
-# fila CUPS. Numa fila `socket://` o job some da fila assim que os bytes entram
-# no socket — a impressora ainda está imprimindo. Numa fila IPP o contador já
-# está em dia e isso resolve na primeira leitura estável (~2s).
-ESPERA_MOTOR_ESTABILIZAR = 60
+# --- Espera pelo motor terminar o job ---------------------------------------
+#
+# Numa fila `socket://` o job some da fila CUPS assim que os bytes entram no
+# socket — a impressora ainda está imprimindo. Esta espera cobre, portanto,
+# quase todo o tempo FÍSICO do job, e por isso é guiada por PROGRESSO e não por
+# relógio: o teto fixo que existia aqui reprovava pedido grande que estava só
+# demorando (35 folhas levam ~100s na 135w, contra um teto de 60s), e cada
+# reprovação dessas custava uma reimpressão inteira em papel.
+#
+# Falta de papel no meio do job NÃO é falha: o pedido continua IMPRIMINDO, a
+# equipe é avisada, alguém repõe e a impressora termina sozinha. O sensor da
+# bandeja só ESTENDE a paciência — nunca a encurta.
+
+# Parada sem nada que a explique (cancelamento no painel, atolamento): é aqui
+# que a espera desiste e o pedido cai em ERRO.
+ESPERA_MOTOR_PARADO = 60
+INTERVALO_SONDAGEM_MOTOR = 2
 
 
-def folhas_gastas_pelo_motor(
-    cfg: Config, fila: str, motor_antes: int | None, folhas_esperadas: int
-) -> int | None:
-    """Folhas que o motor gastou no job; None se o contador não for legível.
+class EsperaMotor(NamedTuple):
+    """Desfecho da espera pelo motor.
 
-    Espera o contador PARAR de subir antes de concluir, senão leríamos no meio
-    de um despejo de lixo e o número sairia pequeno demais. Só desiste cedo
-    quando o contador está estável E já alcançou o esperado.
-
-    A leitura acontece com o job já fora da fila CUPS (transmissão encerrada),
-    e é um datagrama UDP — não é o tipo de conexão que o df1b9f8 proibiu durante
-    a transmissão.
+    `folhas` é o delta medido (None = nenhuma leitura funcionou, nunca 0 por
+    falta de leitura). `motivo` diz por que a espera acabou: `concluido`,
+    `sem_papel` (bandeja vazia além da tolerância), `parado` (motor calado sem
+    explicação) ou `sem_leitura`.
     """
-    if motor_antes is None:
+
+    folhas: int | None
+    motivo: str
+
+
+def bandeja_vazia(nivel: int | None, status: int | None) -> bool | None:
+    """A bandeja está pedindo papel? None quando não há leitura.
+
+    Medido na 135w: com papel, `prtInputCurrentLevel` = -3 (RFC 3805: "tem
+    papel, quantidade desconhecida") e `prtInputStatus` = 0; vazia, nível 0 e
+    status 11 = 8 (bit de alerta crítico) + 3. Nível negativo NÃO é vazio — é
+    ausência de sensor de quantidade, que esta impressora não tem.
+    """
+    if nivel is None and status is None:
         return None
-    limite = time.monotonic() + ESPERA_MOTOR_ESTABILIZAR
-    anterior: int | None = None
-    while True:
-        atual = paginas_do_motor(cfg, fila)
-        if atual is None:
-            return None
-        if atual == anterior and atual - motor_antes >= folhas_esperadas:
-            return atual - motor_antes
-        if time.monotonic() >= limite:
-            log.warning(
-                "Fila %s: contador do motor ainda instável após %ss (delta=%s, "
-                "esperado=%s)",
-                fila,
-                ESPERA_MOTOR_ESTABILIZAR,
-                atual - motor_antes,
+    if nivel is not None:
+        return nivel == 0
+    return bool(status & 8)
+
+
+def decidir_espera(
+    delta: int,
+    folhas_esperadas: int,
+    estavel: bool,
+    vazia: bool | None,
+    s_sem_progresso: float,
+    s_sem_papel: float,
+    tolerancia_sem_papel: int,
+) -> str:
+    """Política da espera: `continuar`, `concluido` ou `desistir`. Pura.
+
+    - alcançou o esperado E o contador parou de subir => `concluido`. A
+      exigência de estabilidade é o que pega o despejo de lixo binário que ainda
+      vai estourar a bandeja: ler no meio dele daria um número pequeno demais;
+    - parado abaixo do esperado com a BANDEJA VAZIA => `continuar` até a
+      tolerância acabar. Alguém pode repor o papel e o job termina sozinho;
+    - parado abaixo do esperado com papel na bandeja (cancelado no painel,
+      atolamento) => `desistir` depois de `ESPERA_MOTOR_PARADO`;
+    - contador subindo => quem chama zera `s_sem_progresso`, então `continuar`
+      pelo tempo que o job precisar.
+    """
+    if delta >= folhas_esperadas and estavel:
+        return "concluido"
+    if vazia:
+        return "desistir" if s_sem_papel >= tolerancia_sem_papel else "continuar"
+    return "desistir" if s_sem_progresso >= ESPERA_MOTOR_PARADO else "continuar"
+
+
+def aguardar_folhas_do_motor(
+    cfg: Config,
+    fila: str,
+    motor_antes: int | None,
+    folhas_esperadas: int,
+    heartbeat: Heartbeat | None = None,
+) -> EsperaMotor:
+    """Acompanha o contador do motor até o job terminar — ou parar de vez.
+
+    O host é resolvido UMA vez: reresolver a cada sondagem era um lookup de rede
+    por iteração, e uma falha dele apagava a medição inteira — foi assim que um
+    pedido com metade das folhas passou como IMPRESSO. Aqui, leitura falha só
+    mantém o último delta bom; `None` fica reservado para "nunca deu para ler".
+
+    São datagramas UDP com o job já fora da fila CUPS: a regra do df1b9f8 (não
+    abrir conexão no equipamento durante a transmissão) continua valendo.
+    """
+    if motor_antes is None or not cfg.snmp_community:
+        return EsperaMotor(None, "sem_leitura")
+    host = host_da_fila(cfg, fila)
+    if host is None:
+        return EsperaMotor(None, "sem_leitura")
+
+    def ler(oid: str) -> int | None:
+        return snmp_get_int(host, oid, cfg.snmp_community, cfg.reachability_timeout)
+
+    ultimo = motor_antes
+    estavel = False
+    leu_alguma = False
+    marco_progresso = time.monotonic()
+    marco_sem_papel: float | None = None
+    try:
+        while True:
+            atual = ler(OID_PAGINAS_MOTOR)
+            if atual is None and not leu_alguma:
+                return EsperaMotor(None, "sem_leitura")  # SNMP mudo desde o começo
+            if atual is not None:
+                leu_alguma = True
+                estavel = atual == ultimo
+                if atual > ultimo:
+                    ultimo = atual
+                    marco_progresso = time.monotonic()
+            else:
+                estavel = False  # sem leitura nova não há prova de estabilidade
+
+            vazia = bandeja_vazia(ler(OID_NIVEL_BANDEJA), ler(OID_STATUS_BANDEJA))
+            agora = time.monotonic()
+            if vazia:
+                # O relógio curto da parada só corre com papel na bandeja. Sem
+                # isto, a reposição chegaria com ele já estourado e o pedido
+                # cairia em ERRO no instante seguinte — justamente o falso ERRO
+                # que a tolerância existe para evitar.
+                marco_progresso = agora
+            if vazia and marco_sem_papel is None:
+                marco_sem_papel = agora
+                log.warning(
+                    "Fila %s: bandeja vazia com o job em andamento (%s de %s folhas) "
+                    "— pedido segue IMPRIMINDO por até %ss à espera de reposição",
+                    fila,
+                    ultimo - motor_antes,
+                    folhas_esperadas,
+                    cfg.paper_wait_timeout,
+                )
+                if heartbeat is not None:
+                    heartbeat.reportar_fisico("SEM_PAPEL")
+            elif not vazia and marco_sem_papel is not None:
+                marco_sem_papel = None
+                log.info("Fila %s: papel reposto — espera retomada", fila)
+                if heartbeat is not None:
+                    heartbeat.reportar_fisico(None)
+
+            decisao = decidir_espera(
+                ultimo - motor_antes,
                 folhas_esperadas,
+                estavel,
+                vazia,
+                agora - marco_progresso,
+                agora - marco_sem_papel if marco_sem_papel is not None else 0.0,
+                cfg.paper_wait_timeout,
             )
-            return atual - motor_antes
-        anterior = atual
-        time.sleep(2)
+            if decisao == "concluido":
+                return EsperaMotor(ultimo - motor_antes, "concluido")
+            if decisao == "desistir":
+                motivo = "sem_papel" if vazia else "parado"
+                log.warning(
+                    "Fila %s: motor parou em %s de %s folhas (%s)",
+                    fila,
+                    ultimo - motor_antes,
+                    folhas_esperadas,
+                    "papel não foi reposto a tempo" if vazia else "sem explicação",
+                )
+                return EsperaMotor(ultimo - motor_antes, motivo)
+            time.sleep(INTERVALO_SONDAGEM_MOTOR)
+    finally:
+        if heartbeat is not None:
+            heartbeat.reportar_fisico(None)
 
 
 # --- Conferência do que a impressora REALMENTE imprimiu ----------------------
@@ -1384,26 +1574,40 @@ def desfecho_do_job(cfg: Config, job_id: str) -> dict | None:
     return desfecho
 
 
+class Veredito(NamedTuple):
+    """`problema` descreve a falha (None = sem falha). `verificado` diz se houve
+    prova vinda do EQUIPAMENTO — sem ela, "sem problema" significa apenas "não
+    foi possível conferir", e nunca "saiu certo"."""
+
+    problema: str | None
+    verificado: bool
+
+
 def conferir_folhas(
     cfg: Config,
     job_id: str,
     folhas_esperadas: int,
     folhas_motor: int | None = None,
-) -> str | None:
-    """Descreve a falha se a impressora não produziu o esperado; None se OK.
+    *,
+    sem_papel: bool = False,
+) -> Veredito:
+    """Descreve a falha se a impressora não produziu o esperado.
 
     Evidências, da mais forte para a mais fraca:
 
     1. `folhas_motor` — delta do contador de vida do motor (ver
        `paginas_do_motor`). É folha que realmente passou pelo mecanismo, então
        vale para qualquer fila, inclusive `socket://`, onde não existe contagem
-       vinda do equipamento por IPP.
+       vinda do equipamento por IPP. É a ÚNICA que aprova.
     2. o job terminou `canceled`/`aborted` no cupsd.
-    3. `job-media-sheets-completed` do cupsd local. Mais fraco do que parece: no
-       job 211 o cupsd registrou 1 folha para um job em que a impressora
-       contabilizou 11. Serve para confirmar, nunca como única fonte.
+    3. `job-media-sheets-completed` do cupsd local. Só condena, nunca absolve:
+       em fila `socket://` ele é o que o filtro empurrou para dentro do socket,
+       não o que a impressora fez — registrou 35 folhas nos jobs 219 e 221, que
+       o motor provou terem saído com 12 e 26, e 2 folhas no job 224, que saiu
+       com 1. Foi confiando nele que um pedido pela metade virou IMPRESSO.
 
-    Sem nenhuma leitura => None: não acusamos falha sem prova.
+    Sem nenhuma prova do equipamento => `verificado=False`: quem chama decide o
+    que fazer com um pedido que não deu para conferir (ver `processar`).
 
     Nota deliberada sobre papel: o veredito olha SÓ quantas folhas saíram. Se a
     bandeja zerar logo depois da última folha correta, o delta bate com o
@@ -1411,35 +1615,46 @@ def conferir_folhas(
     completo não é falha do job.
     """
     if folhas_motor is not None and folhas_motor != folhas_esperadas:
-        return (
+        if sem_papel:
+            return Veredito(
+                f"a impressora ficou sem papel no meio do pedido e não concluiu a "
+                f"tempo — saíram {folhas_motor} de {folhas_esperadas} folha(s)",
+                True,
+            )
+        return Veredito(
             f"o motor da impressora gastou {folhas_motor} folha(s) para um pedido "
             f"de {folhas_esperadas}"
             + (
                 " — provável despejo de lixo binário"
                 if folhas_motor > folhas_esperadas
                 else " — impressão incompleta"
-            )
+            ),
+            True,
         )
+    if folhas_motor is not None:
+        return Veredito(None, True)
 
     desfecho = desfecho_do_job(cfg, job_id)
     if desfecho is None:
-        if folhas_motor is None:
-            log.debug("Job %s: desfecho ilegível — mantendo o veredito da fila", job_id)
-        return None
+        log.debug("Job %s: desfecho ilegível — nada a conferir", job_id)
+        return Veredito(None, False)
 
     estado = desfecho["job_state"]
     if estado in JOB_ESTADOS_DE_FALHA:
         razoes = ", ".join(desfecho["job_state_reasons"]) or "sem razões"
-        return f"job terminou {JOB_NOME_POR_STATE.get(estado, estado)} ({razoes})"
+        return Veredito(
+            f"job terminou {JOB_NOME_POR_STATE.get(estado, estado)} ({razoes})", True
+        )
 
     folhas = desfecho["folhas"]
     if folhas is not None and folhas != folhas_esperadas:
         razoes = ", ".join(desfecho["job_state_reasons"]) or "sem razões"
-        return (
+        return Veredito(
             f"a impressora contabilizou {folhas} folha(s) para um pedido de "
-            f"{folhas_esperadas} — provável despejo de lixo binário ({razoes})"
+            f"{folhas_esperadas} — provável despejo de lixo binário ({razoes})",
+            True,
         )
-    return None
+    return Veredito(None, False)
 
 
 def aguardar_conclusao(cfg: Config, fila: str, job_id: str) -> bool:
@@ -1498,7 +1713,9 @@ def cancelar_job(job_id: str) -> None:
         log.warning("Falha ao cancelar job %s: %s", job_id, err)
 
 
-def processar(sb: Client, cfg: Config, pedido: dict) -> None:
+def processar(
+    sb: Client, cfg: Config, pedido: dict, heartbeat: Heartbeat | None = None
+) -> None:
     pedido_id = pedido["id"]
     pdf_path = pedido["pdf_path"]
     num_paginas = pedido["num_paginas"]
@@ -1642,32 +1859,48 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
                 # Sair da fila não prova que saiu certo: conferimos o que a
                 # impressora de fato produziu antes de cobrar do cliente.
                 folhas_esperadas = paginas_reais * quantidade_copias
-                folhas_motor = folhas_gastas_pelo_motor(
-                    cfg, fila, motor_antes, folhas_esperadas
+                espera = aguardar_folhas_do_motor(
+                    cfg, fila, motor_antes, folhas_esperadas, heartbeat
                 )
-                problema = conferir_folhas(
-                    cfg, job_id, folhas_esperadas, folhas_motor
+                veredito = conferir_folhas(
+                    cfg,
+                    job_id,
+                    folhas_esperadas,
+                    espera.folhas,
+                    sem_papel=espera.motivo == "sem_papel",
                 )
-                if problema:
+                if veredito.problema:
                     log.error(
                         "Pedido %s: job %s concluiu na fila %s mas %s -> ERRO",
                         pedido_id,
                         job_id,
                         fila,
-                        problema,
+                        veredito.problema,
                     )
                     falhar_pedido(
                         sb,
                         cfg,
                         pedido,
-                        problema,
+                        veredito.problema,
                         fila=fila,
                         job_id=job_id,
-                        folhas_impressas=folhas_motor,
+                        folhas_impressas=espera.folhas,
                     )
                     return
                 mark(sb, pedido_id, "IMPRESSO", {"printed_at": now_iso()})
-                log.info("Pedido %s: IMPRESSO (fila %s)", pedido_id, fila)
+                if veredito.verificado:
+                    log.info("Pedido %s: IMPRESSO (fila %s)", pedido_id, fila)
+                else:
+                    # Aprovar sem prova é o que deixou um pedido pela metade
+                    # passar por Pronto. Não vira ERRO (reprovaria pedido
+                    # provavelmente correto), mas a equipe precisa saber.
+                    log.warning(
+                        "Pedido %s: IMPRESSO SEM conferência na fila %s (job %s)",
+                        pedido_id,
+                        fila,
+                        job_id,
+                    )
+                    avisar_sem_conferencia(cfg, pedido, fila, job_id)
             else:
                 log.error(
                     "Pedido %s: timeout após aceitação na fila %s (job %s) -> ERRO "
@@ -1719,11 +1952,13 @@ def main() -> None:
     heartbeat = Heartbeat(cfg)
     heartbeat.start()
     log.info(
-        "Print worker iniciado (impressora=%s, fallback=%s, poll=%ss, print_timeout=%ss, stuck_timeout=%ss)",
+        "Print worker iniciado (impressora=%s, fallback=%s, poll=%ss, print_timeout=%ss, "
+        "paper_wait=%ss, stuck_timeout=%ss)",
         cfg.printer_name,
         cfg.printer_name_fallback or "(nenhuma)",
         cfg.poll_interval,
         cfg.print_timeout,
+        cfg.paper_wait_timeout,
         cfg.stuck_timeout,
     )
 
@@ -1752,7 +1987,7 @@ def main() -> None:
             if pedido and reivindicar(sb, pedido["id"]):
                 heartbeat.marcar_imprimindo(True)
                 try:
-                    processar(sb, cfg, pedido)
+                    processar(sb, cfg, pedido, heartbeat)
                 finally:
                     heartbeat.marcar_imprimindo(False)
                 continue  # busca o próximo imediatamente, sem dormir

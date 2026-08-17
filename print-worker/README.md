@@ -116,7 +116,7 @@ journalctl -u print-worker -f
 ```
 
 O serviço tem `Restart=always`: sobe no boot e se recupera de crashes. Pedidos presos
-em `IMPRIMINDO` por mais de `STUCK_TIMEOUT` (padrão 15 min) voltam sozinhos para `PAGO`.
+em `IMPRIMINDO` por mais de `STUCK_TIMEOUT` (padrão 20 min) voltam sozinhos para `PAGO`.
 
 ## Configuração (.env)
 
@@ -128,7 +128,8 @@ em `IMPRIMINDO` por mais de `STUCK_TIMEOUT` (padrão 15 min) voltam sozinhos par
 | `PRINTER_NAME_FALLBACK` | não | — | Fila CUPS de fallback (USB); failover só na pré-submissão |
 | `POLL_INTERVAL` | não | `10` | Segundos entre consultas à fila |
 | `PRINT_TIMEOUT` | não | `180` | Segundos de espera pela conclusão do job |
-| `STUCK_TIMEOUT` | não | `900` | Segundos até re-filar um pedido travado em IMPRIMINDO |
+| `PAPER_WAIT_TIMEOUT` | não | `600` | Segundos que o pedido continua em `IMPRIMINDO` esperando alguém repor o papel que acabou no meio do job |
+| `STUCK_TIMEOUT` | não | `1200` | Segundos até re-filar um pedido travado em IMPRIMINDO. Tem de caber `PRINT_TIMEOUT` + `PAPER_WAIT_TIMEOUT` + 60s, senão um restart do worker durante a espera por papel reimprime o pedido |
 | `REACHABILITY_TIMEOUT` | não | `3` | Timeout (s) da checagem de alcançabilidade do destino de filas de rede antes de submeter |
 | `SNMP_COMMUNITY` | não | `public` | Community SNMP v1 de leitura, usada só para o contador de páginas do motor (conferência do que a impressora realmente imprimiu). Vazia desliga a conferência por SNMP |
 | `LP_OPTIONS` | não | `fit-to-page` | Opções `-o` do `lp` (tokens separados por espaço). Padrão escala à área imprimível e auto-rotaciona paisagem, evitando PDFs deitados cortados. Vazio = sem opções |
@@ -305,6 +306,38 @@ Configure `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (ver "Configuração (.env)" a
 para habilitar. Sem essas envs, o worker apenas loga a transição e segue
 normalmente — nada quebra.
 
+## Conferência do que a impressora realmente imprimiu
+
+Sair da fila do CUPS não prova nada. Numa fila `socket://` o job some da fila assim que
+os bytes entram no socket — a impressora ainda está imprimindo — e o
+`job-media-sheets-completed` que o cupsd local registra é o que o **filtro** empurrou
+para dentro do socket, não o que a impressora fez. Medido nesta instalação: os jobs 219
+e 221 foram registrados como 35 folhas `completed` enquanto o motor tinha produzido 12 e
+26; o job 224 foi registrado como 2 folhas tendo entregue 1. **Esse número nunca aprova
+um pedido** — só pode condenar.
+
+Quem aprova é o contador de vida do motor (`prtMarkerLifeCount`, por SNMP): folha que
+passou pelo mecanismo. O worker lê o contador antes de submeter e acompanha o delta até
+o job terminar.
+
+A espera é guiada por **progresso**, não por relógio:
+
+- enquanto o contador sobe, a espera continua — um pedido de 35 folhas leva ~100 s e não
+  pode ser reprovado por estar apenas demorando;
+- alcançado o total esperado, o contador ainda precisa **parar de subir** para o pedido
+  ser aprovado. É isso que pega o despejo de lixo binário ainda em curso;
+- **o papel acabar no meio do job não é falha**: com a bandeja vazia (`prtInputCurrentLevel`
+  = 0), o pedido continua em `IMPRIMINDO` por até `PAPER_WAIT_TIMEOUT`, o kiosk e o
+  Telegram mostram `SEM_PAPEL`, e se alguém repuser o papel a impressora termina o job
+  sozinha e o pedido vira `IMPRESSO`;
+- parada **sem explicação** (job cancelado no painel, atolamento) com a bandeja cheia:
+  60 s e o pedido vai a `ERRO` com o número de folhas que de fato saíram.
+
+Sem nenhuma leitura do contador (SNMP mudo, `SNMP_COMMUNITY` vazia, impressora trocada)
+o pedido é marcado `IMPRESSO` e a equipe recebe um aviso de que **aquele pedido ficou sem
+conferência** — reprovar sem prova custaria uma reimpressão inteira de um pedido
+provavelmente correto.
+
 ## Operação: pedidos em ERRO
 
 O worker marca `status = 'ERRO'` (sem retry automático) quando:
@@ -314,13 +347,16 @@ O worker marca `status = 'ERRO'` (sem retry automático) quando:
 - a **contagem real de páginas diverge** de `num_paginas` (proteção contra fraude);
 - **nenhuma fila aceita o job** (primária e fallback falham na pré-submissão);
 - a **impressão não conclui** dentro de `PRINT_TIMEOUT` após a aceitação
-  (impressora offline, sem papel, atolada) — **sem** failover, para não duplicar.
+  (impressora offline, atolada) — **sem** failover, para não duplicar;
+- a **conferência de folhas** reprova o job (ver a seção acima): saíram mais folhas que o
+  pedido (lixo binário), saíram menos sem explicação, ou o papel acabou e não foi reposto
+  dentro de `PAPER_WAIT_TIMEOUT`.
 
 > Desde a coleta de saúde via IPP ("Heartbeat e saúde da impressora" acima), sem
 > papel/sem toner/atolamento **antes** da reivindicação já são tratados por
-> retenção — o pedido nem chega a ser reivindicado, então não vira `ERRO`. O
-> último bullet acima cobre só o caso residual: a falha física surge **depois**
-> que o job já foi aceito pelo CUPS (ex.: o papel acaba no meio da impressão).
+> retenção — o pedido nem chega a ser reivindicado, então não vira `ERRO`. Falha
+> física **depois** da aceitação do job é tratada pela conferência de folhas, que
+> tolera a reposição de papel antes de reprovar.
 
 > Se os logs mostram que o job foi **aceito** numa fila mas deu timeout, a folha
 > pode ter saído mesmo assim (falso negativo). Confirme fisicamente: se a

@@ -824,18 +824,18 @@ def linhas_de_transicao(
     return linhas, pendente
 
 
-def enviar_aviso_telegram(cfg: Config, linhas: list[str]) -> None:
-    """Envia o aviso de saúde à equipe via Telegram Bot API.
+def enviar_telegram(cfg: Config, texto: str) -> None:
+    """Envia um texto à equipe via Telegram Bot API (sendMessage).
 
-    Best-effort: envs ausentes ou falha de rede apenas logam; o heartbeat e a
-    impressão nunca são afetados.
+    Best-effort: envs ausentes ou falha de rede apenas logam; o heartbeat, a
+    impressão e a marcação de status nunca são afetados.
     """
-    if not linhas:
-        return
     if not cfg.telegram_bot_token or not cfg.telegram_chat_id:
-        log.info("Aviso de saúde sem Telegram configurado — pulado: %s", " / ".join(linhas))
+        log.info(
+            "Telegram não configurado — aviso não enviado: %s",
+            texto.replace("\n", " | "),
+        )
         return
-    texto = "🖨️ Impressora do totem\n" + "\n".join(linhas) + f"\nFila: {cfg.printer_name}"
     try:
         req = Request(
             f"https://api.telegram.org/bot{cfg.telegram_bot_token}/sendMessage",
@@ -847,6 +847,101 @@ def enviar_aviso_telegram(cfg: Config, linhas: list[str]) -> None:
                 log.warning("Telegram sendMessage retornou HTTP %s", resp.status)
     except Exception as err:  # noqa: BLE001 - best-effort: nunca derruba o ciclo
         log.warning("Notificação Telegram falhou (best-effort): %s", err)
+
+
+def enviar_aviso_telegram(cfg: Config, linhas: list[str]) -> None:
+    """Aviso de SAÚDE da impressora (transições de estado do heartbeat)."""
+    if not linhas:
+        return
+    enviar_telegram(
+        cfg,
+        "🖨️ Impressora do totem\n" + "\n".join(linhas) + f"\nFila: {cfg.printer_name}",
+    )
+
+
+# --- Aviso de pedido em ERRO ------------------------------------------------
+#
+# Todo caminho que marca ERRO passa por `falhar_pedido`, que além da marcação
+# manda uma mensagem à equipe com o que ela precisa para agir sem ir ao totem:
+# protocolo (o mesmo código de 8 dígitos que o cliente vê), o que era esperado,
+# quantas folhas de fato saíram e o comando de reimpressão já pronto.
+
+
+def protocolo_do_pedido(pedido_id: str) -> str:
+    """Protocolo visível ao cliente: 8 primeiros caracteres do UUID, maiúsculos.
+
+    Mesma derivação da view `fila_publica` (`upper(left(id::text, 8))`), então o
+    código do aviso é exatamente o que a equipe digita em `/reimprimir`.
+    """
+    return str(pedido_id)[:8].upper()
+
+
+def mensagem_erro_pedido(
+    pedido: dict,
+    motivo: str,
+    *,
+    fila: str | None = None,
+    job_id: str | None = None,
+    folhas_impressas: int | None = None,
+) -> str:
+    """Texto do aviso de ERRO (função pura, testável sem rede nem impressora).
+
+    `folhas_impressas` é o que a impressora comprovadamente produziu: 0 quando a
+    falha é anterior a qualquer submissão, o delta do contador do motor quando
+    houve conferência, e None quando não há prova (ex.: timeout com o job ainda
+    em voo) — nesse caso o aviso diz "não confirmado" em vez de chutar um número.
+    """
+    protocolo = protocolo_do_pedido(pedido["id"])
+    copias = quantidade_copias_do_pedido(pedido)
+    paginas = pedido.get("num_paginas")
+
+    linhas = [
+        "❌ Pedido em ERRO",
+        f"Protocolo: {protocolo}",
+        f"Motivo: {motivo}",
+    ]
+    if isinstance(paginas, int):
+        linhas.append(
+            f"Esperado: {paginas} pág. × {copias} "
+            f"{'cópia' if copias == 1 else 'cópias'} = {paginas * copias} folha(s)"
+        )
+    linhas.append(
+        f"Impresso: {folhas_impressas} folha(s)"
+        if folhas_impressas is not None
+        else "Impresso: não confirmado"
+    )
+    if fila:
+        linhas.append(f"Fila: {fila}" + (f" (job {job_id})" if job_id else ""))
+    linhas.append(f"Reimprimir: /reimprimir {protocolo}")
+    return "\n".join(linhas)
+
+
+def falhar_pedido(
+    sb: Client,
+    cfg: Config,
+    pedido: dict,
+    motivo: str,
+    *,
+    fila: str | None = None,
+    job_id: str | None = None,
+    folhas_impressas: int | None = None,
+) -> None:
+    """Marca o pedido como ERRO e avisa a equipe no Telegram.
+
+    A marcação vem primeiro e o aviso é best-effort: o que o cliente vê no totem
+    nunca depende do Telegram estar configurado ou a Bot API estar de pé.
+    """
+    mark(sb, pedido["id"], "ERRO")
+    enviar_telegram(
+        cfg,
+        mensagem_erro_pedido(
+            pedido,
+            motivo,
+            fila=fila,
+            job_id=job_id,
+            folhas_impressas=folhas_impressas,
+        ),
+    )
 
 
 def deve_segurar_pedidos(cfg: Config, estado_saude: str | None) -> bool:
@@ -1420,14 +1515,26 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
         pdf_bytes = baixar_pdf(sb, pdf_path)
     except Exception as err:  # noqa: BLE001
         log.error("Pedido %s: download falhou: %s", pedido_id, err)
-        mark(sb, pedido_id, "ERRO")
+        falhar_pedido(
+            sb,
+            cfg,
+            pedido,
+            f"não foi possível baixar o PDF do storage ({str(err)[:200]})",
+            folhas_impressas=0,
+        )
         return
 
     try:
         paginas_reais = contar_paginas(pdf_bytes)
     except Exception as err:  # noqa: BLE001
         log.error("Pedido %s: PDF inválido/ilegível: %s", pedido_id, err)
-        mark(sb, pedido_id, "ERRO")
+        falhar_pedido(
+            sb,
+            cfg,
+            pedido,
+            f"PDF inválido ou ilegível ({str(err)[:200]})",
+            folhas_impressas=0,
+        )
         return
 
     if paginas_reais != num_paginas:
@@ -1437,7 +1544,14 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
             num_paginas,
             paginas_reais,
         )
-        mark(sb, pedido_id, "ERRO")
+        falhar_pedido(
+            sb,
+            cfg,
+            pedido,
+            f"o PDF tem {paginas_reais} página(s), mas o pedido declara "
+            f"{num_paginas} — nada foi impresso",
+            folhas_impressas=0,
+        )
         return
 
     if modo_cor == "COLORIDO":
@@ -1542,7 +1656,15 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
                         fila,
                         problema,
                     )
-                    mark(sb, pedido_id, "ERRO")
+                    falhar_pedido(
+                        sb,
+                        cfg,
+                        pedido,
+                        problema,
+                        fila=fila,
+                        job_id=job_id,
+                        folhas_impressas=folhas_motor,
+                    )
                     return
                 mark(sb, pedido_id, "IMPRESSO", {"printed_at": now_iso()})
                 log.info("Pedido %s: IMPRESSO (fila %s)", pedido_id, fila)
@@ -1555,7 +1677,17 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
                     job_id,
                 )
                 cancelar_job(job_id)
-                mark(sb, pedido_id, "ERRO")
+                # Sem número de folhas aqui de propósito: o job pode ainda estar
+                # em voo, e a regra do df1b9f8 proíbe consultar o equipamento
+                # nessa janela. O aviso diz "não confirmado" em vez de mentir.
+                falhar_pedido(
+                    sb,
+                    cfg,
+                    pedido,
+                    f"o job não concluiu em {cfg.print_timeout}s e foi cancelado",
+                    fila=fila,
+                    job_id=job_id,
+                )
             return
 
         # Esgotou todas as filas só com falhas de pré-submissão: nada impresso.
@@ -1564,7 +1696,13 @@ def processar(sb: Client, cfg: Config, pedido: dict) -> None:
             pedido_id,
             ", ".join(filas),
         )
-        mark(sb, pedido_id, "ERRO")
+        falhar_pedido(
+            sb,
+            cfg,
+            pedido,
+            f"nenhuma fila aceitou o job ({', '.join(filas)}) — nada foi impresso",
+            folhas_impressas=0,
+        )
     finally:
         try:
             os.unlink(caminho)

@@ -132,8 +132,8 @@ em `IMPRIMINDO` por mais de `STUCK_TIMEOUT` (padrão 15 min) voltam sozinhos par
 | `REACHABILITY_TIMEOUT` | não | `3` | Timeout (s) da checagem de alcançabilidade do destino de filas de rede antes de submeter |
 | `SNMP_COMMUNITY` | não | `public` | Community SNMP v1 de leitura, usada só para o contador de páginas do motor (conferência do que a impressora realmente imprimiu). Vazia desliga a conferência por SNMP |
 | `LP_OPTIONS` | não | `fit-to-page` | Opções `-o` do `lp` (tokens separados por espaço). Padrão escala à área imprimível e auto-rotaciona paisagem, evitando PDFs deitados cortados. Vazio = sem opções |
-| `TELEGRAM_BOT_TOKEN` | não | — | Token do Bot do Telegram; ativa o aviso de saúde da impressora (mesma env usada por `/api/kiosk/help` no site). Ausente = a transição só é logada, nada quebra |
-| `TELEGRAM_CHAT_ID` | não | — | Chat/grupo do Telegram que recebe o aviso. Ausente = idem acima |
+| `TELEGRAM_BOT_TOKEN` | não | — | Token do Bot do Telegram; ativa os avisos de saúde da impressora e de pedido em `ERRO` (mesma env usada por `/api/kiosk/help` no site). Ausente = o evento só é logado, nada quebra |
+| `TELEGRAM_CHAT_ID` | não | — | Chat/grupo do Telegram que recebe os avisos. Ausente = idem acima |
 
 ## Higiene do spool CUPS (purga de jobs órfãos)
 
@@ -298,7 +298,8 @@ rota `/api/kiosk/help` do site) quando:
 
 - o estado muda **para** `SEM_PAPEL`, `SEM_TONER` ou `MANUTENCAO` — nunca a cada
   heartbeat, só na transição para o problema;
-- `toner_baixo` passa de `false` para `true`.
+- `toner_baixo` passa de `false` para `true`;
+- um pedido é marcado como **`ERRO`** (ver "Operação: pedidos em ERRO" abaixo).
 
 Configure `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (ver "Configuração (.env)" acima)
 para habilitar. Sem essas envs, o worker apenas loga a transição e segue
@@ -326,9 +327,36 @@ O worker marca `status = 'ERRO'` (sem retry automático) quando:
 > impressão saiu correta, marque o pedido como `IMPRESSO` manualmente em vez de
 > re-filar para `PAGO` (re-filar reimprimiria todas as cópias).
 
+### Aviso de ERRO no Telegram
+
+Toda marcação de `ERRO` dispara uma mensagem ao chat da equipe (`TELEGRAM_BOT_TOKEN`
+/`TELEGRAM_CHAT_ID`), para que a falha seja tratada sem alguém precisar olhar os logs
+ou o Supabase:
+
+```
+❌ Pedido em ERRO
+Protocolo: A1B2C3D4
+Motivo: o motor da impressora gastou 30 folha(s) para um pedido de 22 — provável despejo de lixo binário
+Esperado: 11 pág. × 2 cópias = 22 folha(s)
+Impresso: 30 folha(s)
+Fila: Titans_Laser (job Titans_Laser-211)
+Reimprimir: /reimprimir A1B2C3D4
+```
+
+O **protocolo** é o mesmo código de 8 dígitos que o cliente vê no totem, então dá para
+responder no próprio Telegram com `/reimprimir <protocolo>` (ou `/gerar_codigo`, se
+quem vai reimprimir é o cliente). **Impresso** é o que a impressora comprovadamente
+produziu: `0` quando a falha é anterior à submissão, o delta do contador do motor
+quando houve conferência, e `não confirmado` no timeout — nesse caso o job pode ainda
+estar em voo e consultar o equipamento é proibido (ver "Higiene do spool"), então o
+aviso não chuta um número.
+
+Como todo envio ao Telegram no worker, é **best-effort**: a marcação de `ERRO` acontece
+antes do envio, e envs ausentes ou Bot API fora do ar só geram uma linha de log.
+
 Tratamento manual de um pedido em `ERRO`:
 
-1. Veja o motivo nos logs: `journalctl -u print-worker | grep <id-do-pedido>`.
+1. Veja o motivo no aviso do Telegram ou nos logs: `journalctl -u print-worker | grep <id-do-pedido>`.
 2. Resolva a causa (papel/toner/atolamento, ou contato com o cliente se o PDF for inválido).
 3. Para reimprimir um pedido cuja causa foi resolvida, volte-o para `PAGO` no Supabase
    (Table Editor ou SQL): `update fila_impressao set status='PAGO' where id='<id>';` —

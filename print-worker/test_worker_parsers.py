@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import types
 import unittest
 
 # Garante que `worker` seja importável mesmo rodando de outro diretório
@@ -559,6 +560,71 @@ class AlvoIppDaFilaTests(unittest.TestCase):
             worker.alvo_ipp_da_fila("Titans_SPL"),
             "ipp://localhost:631/printers/Titans_SPL",
         )
+
+
+class MensagemErroPedidoTests(unittest.TestCase):
+    """`mensagem_erro_pedido`: o aviso que a equipe recebe no Telegram."""
+
+    PEDIDO = {
+        "id": "a1b2c3d4-1111-2222-3333-444455556666",
+        "num_paginas": 11,
+        "quantidade_copias": 2,
+    }
+
+    def test_protocolo_e_o_mesmo_da_fila_publica(self) -> None:
+        """8 primeiros caracteres do UUID em maiúsculas, como `fila_publica`."""
+        self.assertEqual(
+            worker.protocolo_do_pedido("a1b2c3d4-1111-2222-3333-444455556666"),
+            "A1B2C3D4",
+        )
+
+    def test_traz_protocolo_esperado_impresso_fila_e_comando(self) -> None:
+        texto = worker.mensagem_erro_pedido(
+            self.PEDIDO,
+            "o motor gastou 30 folha(s) para um pedido de 22",
+            fila="Titans_Laser",
+            job_id="Titans_Laser-211",
+            folhas_impressas=30,
+        )
+        self.assertIn("Protocolo: A1B2C3D4", texto)
+        self.assertIn("Motivo: o motor gastou 30 folha(s) para um pedido de 22", texto)
+        self.assertIn("Esperado: 11 pág. × 2 cópias = 22 folha(s)", texto)
+        self.assertIn("Impresso: 30 folha(s)", texto)
+        self.assertIn("Fila: Titans_Laser (job Titans_Laser-211)", texto)
+        self.assertIn("/reimprimir A1B2C3D4", texto)
+
+    def test_uma_copia_no_singular(self) -> None:
+        texto = worker.mensagem_erro_pedido(
+            {"id": "abcdef01-0000-0000-0000-000000000000", "num_paginas": 3},
+            "PDF inválido",
+            folhas_impressas=0,
+        )
+        self.assertIn("Esperado: 3 pág. × 1 cópia = 3 folha(s)", texto)
+        self.assertIn("Impresso: 0 folha(s)", texto)
+
+    def test_sem_prova_de_folhas_diz_nao_confirmado(self) -> None:
+        """Timeout com job em voo: não inventamos um número de folhas."""
+        texto = worker.mensagem_erro_pedido(
+            self.PEDIDO, "o job não concluiu em 180s", fila="Titans_Laser"
+        )
+        self.assertIn("Impresso: não confirmado", texto)
+        self.assertIn("Fila: Titans_Laser", texto)
+        self.assertNotIn("(job", texto)
+
+
+class EnviarTelegramTests(unittest.TestCase):
+    """`enviar_telegram`: best-effort — sem envs não tenta rede e não levanta."""
+
+    def test_sem_envs_apenas_loga(self) -> None:
+        cfg = types.SimpleNamespace(telegram_bot_token="", telegram_chat_id="")
+        chamou = []
+        original = worker.urlopen
+        worker.urlopen = lambda *a, **k: chamou.append(a)  # type: ignore[assignment]
+        try:
+            worker.enviar_telegram(cfg, "❌ Pedido em ERRO\nProtocolo: A1B2C3D4")
+        finally:
+            worker.urlopen = original  # type: ignore[assignment]
+        self.assertEqual(chamou, [])
 
 
 if __name__ == "__main__":

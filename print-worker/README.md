@@ -129,7 +129,7 @@ em `IMPRIMINDO` por mais de `STUCK_TIMEOUT` (padrão 20 min) voltam sozinhos par
 | `POLL_INTERVAL` | não | `10` | Segundos entre consultas à fila |
 | `PRINT_TIMEOUT` | não | `180` | Segundos de espera pela conclusão do job |
 | `PAPER_WAIT_TIMEOUT` | não | `600` | Segundos que o pedido continua em `IMPRIMINDO` esperando alguém repor o papel que acabou no meio do job. Vale em fila `socket://`, onde o job já saiu do CUPS e quem acompanha é o contador do motor; em fila IPP o job fica preso no CUPS e quem dispara primeiro é o `PRINT_TIMEOUT` |
-| `STUCK_TIMEOUT` | não | `1200` | Segundos até re-filar um pedido travado em IMPRIMINDO. Tem de caber `PRINT_TIMEOUT` + `PAPER_WAIT_TIMEOUT` + 60s, senão um restart do worker durante a espera por papel reimprime o pedido |
+| `STUCK_TIMEOUT` | não | `1200` | Segundos até re-filar um pedido travado em IMPRIMINDO. Tem de caber `PRINT_TIMEOUT` + `PAPER_WAIT_TIMEOUT` + 60s, senão um restart do worker durante a espera por papel reimprime o pedido. **A conta é otimista** — ver a ressalva abaixo |
 | `REACHABILITY_TIMEOUT` | não | `3` | Timeout (s) da checagem de alcançabilidade do destino de filas de rede antes de submeter |
 | `SNMP_COMMUNITY` | não | `public` | Community SNMP v1 de leitura, usada só para o contador de páginas do motor (conferência do que a impressora realmente imprimiu). Vazia desliga a conferência por SNMP |
 | `LP_OPTIONS` | não | `fit-to-page` | Opções `-o` do `lp` (tokens separados por espaço). Padrão escala à área imprimível e auto-rotaciona paisagem, evitando PDFs deitados cortados. Vazio = sem opções |
@@ -353,6 +353,21 @@ Sem nenhuma das duas provas (SNMP mudo e fila sem contagem IPP, `SNMP_COMMUNITY`
 impressora trocada) o pedido é marcado `IMPRESSO` e a equipe recebe um aviso de que
 **aquele pedido ficou sem conferência** — reprovar sem prova custaria uma reimpressão
 inteira de um pedido provavelmente correto.
+
+### Ressalva conhecida: o `STUCK_TIMEOUT` mede do pagamento, não da impressão
+
+`recuperar_travados` compara o corte com **`paid_at`** — o instante do pagamento —, e
+`reivindicar` não registra quando a impressão começou (não existe coluna para isso). Logo, **o
+tempo que o pedido passou parado em `PAGO` já consome o orçamento do `STUCK_TIMEOUT`**, e esse
+tempo é ilimitado por construção: `deve_segurar_pedidos` segura a fila de propósito enquanto a
+impressora está `SEM_PAPEL`/`INALCANCAVEL`.
+
+Na prática a margem real é `STUCK_TIMEOUT − (PRINT_TIMEOUT + PAPER_WAIT_TIMEOUT + 60) − tempo
+parado em PAGO`, que pode ser negativa. O sintoma é reimpressão duplicada quando o worker
+reinicia logo depois de uma espera longa. Os valores em produção foram subidos (`1200`/`1800`)
+como paliativo; a correção de verdade exige um relógio próprio para a impressão, e `paid_at`
+**não** pode ser reaproveitado — ele é o critério de FIFO da fila inteira (worker, view
+`fila_publica`, posição no totem, reimpressão).
 
 ## Operação: pedidos em ERRO
 

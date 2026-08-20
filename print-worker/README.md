@@ -125,10 +125,10 @@ em `IMPRIMINDO` por mais de `STUCK_TIMEOUT` (padrão 20 min) voltam sozinhos par
 | `SUPABASE_URL` | sim | — | URL do projeto Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | sim | — | service_role key (segredo; bypassa RLS) |
 | `PRINTER_NAME` | sim | — | Fila CUPS primária (Wi-Fi `Titans_Laser`; `lpstat -p`) |
-| `PRINTER_NAME_FALLBACK` | não | — | Fila CUPS de fallback (USB); failover só na pré-submissão |
+| `PRINTER_NAME_FALLBACK` | não | — | Fila CUPS de fallback; failover só na pré-submissão. Em produção é a `Titans_USB`, a fila de **cabo** — mesmo driver SPL da primária, mas por `ipp://127.0.0.1:60000/ipp/print` (ponte `ippusbxd` sobre USB). É o único caminho que sobrevive a uma queda do Wi-Fi |
 | `POLL_INTERVAL` | não | `10` | Segundos entre consultas à fila |
 | `PRINT_TIMEOUT` | não | `180` | Segundos de espera pela conclusão do job |
-| `PAPER_WAIT_TIMEOUT` | não | `600` | Segundos que o pedido continua em `IMPRIMINDO` esperando alguém repor o papel que acabou no meio do job |
+| `PAPER_WAIT_TIMEOUT` | não | `600` | Segundos que o pedido continua em `IMPRIMINDO` esperando alguém repor o papel que acabou no meio do job. Vale em fila `socket://`, onde o job já saiu do CUPS e quem acompanha é o contador do motor; em fila IPP o job fica preso no CUPS e quem dispara primeiro é o `PRINT_TIMEOUT` |
 | `STUCK_TIMEOUT` | não | `1200` | Segundos até re-filar um pedido travado em IMPRIMINDO. Tem de caber `PRINT_TIMEOUT` + `PAPER_WAIT_TIMEOUT` + 60s, senão um restart do worker durante a espera por papel reimprime o pedido |
 | `REACHABILITY_TIMEOUT` | não | `3` | Timeout (s) da checagem de alcançabilidade do destino de filas de rede antes de submeter |
 | `SNMP_COMMUNITY` | não | `public` | Community SNMP v1 de leitura, usada só para o contador de páginas do motor (conferência do que a impressora realmente imprimiu). Vazia desliga a conferência por SNMP |

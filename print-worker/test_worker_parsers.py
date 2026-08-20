@@ -656,7 +656,7 @@ class ConferirFolhasMotorTests(unittest.TestCase):
     def test_delta_bate_nao_acusa(self) -> None:
         self._sem_desfecho_do_cupsd()
         self.assertIsNone(
-            worker.conferir_folhas(None, "Titans_SPL-215", 2, folhas_motor=2).problema
+            worker.conferir_folhas(None, "Titans_SPL-215", 2, folhas_equipamento=2).problema
         )
 
     def test_papel_acaba_depois_da_ultima_folha_nao_e_erro(self) -> None:
@@ -667,20 +667,20 @@ class ConferirFolhasMotorTests(unittest.TestCase):
         """
         self._sem_desfecho_do_cupsd()
         self.assertIsNone(
-            worker.conferir_folhas(None, "Titans_SPL-216", 3, folhas_motor=3).problema
+            worker.conferir_folhas(None, "Titans_SPL-216", 3, folhas_equipamento=3).problema
         )
 
     def test_lixo_queimando_a_bandeja_acusa(self) -> None:
         """Caso real do job 211: 11 folhas para um pedido de 2."""
         self._sem_desfecho_do_cupsd()
-        problema = worker.conferir_folhas(None, "Titans_SPL-211", 2, folhas_motor=11).problema
+        problema = worker.conferir_folhas(None, "Titans_SPL-211", 2, folhas_equipamento=11).problema
         self.assertIsNotNone(problema)
         self.assertIn("11 folha(s)", problema)
         self.assertIn("lixo binário", problema)
 
     def test_impressao_incompleta_acusa_sem_falar_em_lixo(self) -> None:
         self._sem_desfecho_do_cupsd()
-        problema = worker.conferir_folhas(None, "Titans_SPL-217", 5, folhas_motor=2).problema
+        problema = worker.conferir_folhas(None, "Titans_SPL-217", 5, folhas_equipamento=2).problema
         self.assertIsNotNone(problema)
         self.assertIn("incompleta", problema)
         self.assertNotIn("lixo binário", problema)
@@ -699,20 +699,20 @@ class ConferirFolhasMotorTests(unittest.TestCase):
             "folhas": 2,
         }
         self.addCleanup(lambda: setattr(worker, "desfecho_do_job", original))
-        veredito = worker.conferir_folhas(None, "Titans_SPL-224", 2, folhas_motor=None)
+        veredito = worker.conferir_folhas(None, "Titans_SPL-224", 2, folhas_equipamento=None)
         self.assertIsNone(veredito.problema)
         self.assertFalse(veredito.verificado)
 
     def test_motor_aprova_de_verdade(self) -> None:
         self._sem_desfecho_do_cupsd()
         self.assertTrue(
-            worker.conferir_folhas(None, "Titans_SPL-215", 2, folhas_motor=2).verificado
+            worker.conferir_folhas(None, "Titans_SPL-215", 2, folhas_equipamento=2).verificado
         )
 
     def test_sem_papel_tem_motivo_proprio(self) -> None:
         self._sem_desfecho_do_cupsd()
         problema = worker.conferir_folhas(
-            None, "Titans_SPL-224", 2, folhas_motor=1, sem_papel=True
+            None, "Titans_SPL-224", 2, folhas_equipamento=1, sem_papel=True
         ).problema
         self.assertIn("sem papel", problema)
         self.assertIn("1 de 2", problema)
@@ -727,7 +727,7 @@ class ConferirFolhasMotorTests(unittest.TestCase):
             "folhas": 2,
         }
         self.addCleanup(lambda: setattr(worker, "desfecho_do_job", original))
-        problema = worker.conferir_folhas(None, "Titans_Laser-196", 1, folhas_motor=None).problema
+        problema = worker.conferir_folhas(None, "Titans_Laser-196", 1, folhas_equipamento=None).problema
         self.assertIsNotNone(problema)
         self.assertIn("2 folha(s)", problema)
 
@@ -774,6 +774,190 @@ class AlvoIppDaFilaTests(unittest.TestCase):
             worker.alvo_ipp_da_fila("Titans_SPL"),
             "ipp://localhost:631/printers/Titans_SPL",
         )
+
+
+class FilaContaPorIppTests(unittest.TestCase):
+    """`fila_conta_por_ipp`: em que filas a impressora registra o job dela."""
+
+    def _com_device_uri(self, uri):
+        original = worker.device_uri_da_fila
+        worker.device_uri_da_fila = lambda fila: uri
+        self.addCleanup(lambda: setattr(worker, "device_uri_da_fila", original))
+
+    def test_fila_de_cabo_conta(self) -> None:
+        """A ponte ippusbxd é IPP de verdade — o equipamento registra o job."""
+        self._com_device_uri("ipp://127.0.0.1:60000/ipp/print")
+        self.assertTrue(worker.fila_conta_por_ipp("Titans_USB"))
+
+    def test_fila_ipp_de_rede_conta(self) -> None:
+        self._com_device_uri("ipp://HPE4E749FC401D.local/ipp/print")
+        self.assertTrue(worker.fila_conta_por_ipp("Titans_Laser"))
+
+    def test_fila_socket_nao_conta(self) -> None:
+        """Porta RAW: o fluxo entra sem virar job na lista IPP da impressora."""
+        self._com_device_uri("socket://10.74.1.109:9100")
+        self.assertFalse(worker.fila_conta_por_ipp("Titans_SPL"))
+
+    def test_sem_device_uri_nao_conta(self) -> None:
+        self._com_device_uri(None)
+        self.assertFalse(worker.fila_conta_por_ipp("Titans_SPL"))
+
+
+class ParseJobsEquipamentoTests(unittest.TestCase):
+    """`_parse_jobs_equipamento`: saída real de um Get-Jobs na 135w."""
+
+    # Capturado de `ipptool -tv ipp://127.0.0.1:60000/ipp/print` (fila de cabo).
+    # Os dois jobs vieram de um celular por AirPrint — servem justamente para
+    # provar que job de terceiro é enxergado e precisa ser filtrado.
+    SAIDA = """    jobs                                                                 [PASS]
+        RECEIVED: 472 bytes in response
+        status-code = successful-ok (successful-ok)
+        attributes-charset (charset) = utf-8
+        printer-uri (uri) = ipp://127.0.0.1:60000/ipp/print
+        job-id (integer) = 880
+        job-state (enum) = completed
+        job-name (nameWithoutLanguage) = Cartaz_Impressao.png
+        job-media-sheets-completed (integer) = 1
+        -- separator --
+        job-id (integer) = 881
+        job-state (enum) = completed
+        job-name (nameWithoutLanguage) = Cartaz_Impressao.png
+        job-media-sheets-completed (integer) = 8
+"""
+
+    def test_le_os_dois_jobs(self) -> None:
+        jobs = worker._parse_jobs_equipamento(self.SAIDA)
+        self.assertEqual([j["job_id"] for j in jobs], [880, 881])
+        self.assertEqual([j["folhas"] for j in jobs], [1, 8])
+        self.assertEqual({j["nome"] for j in jobs}, {"Cartaz_Impressao.png"})
+
+    def test_eco_da_requisicao_nao_vira_job(self) -> None:
+        """A linha `requested-attributes` cita `job-id` sem ser um job."""
+        eco = (
+            "    Get-Jobs:\n"
+            "        which-jobs (keyword) = all\n"
+            "        requested-attributes (1setOf keyword) = "
+            "job-id,job-name,job-state,job-media-sheets-completed\n"
+        )
+        self.assertEqual(worker._parse_jobs_equipamento(eco), [])
+
+    def test_job_state_reasons_nao_e_lido_como_job_state(self) -> None:
+        saida = (
+            "        job-id (integer) = 900\n"
+            "        job-state-reasons (keyword) = job-completed-successfully\n"
+            "        job-media-sheets-completed (integer) = 2\n"
+        )
+        self.assertIsNone(worker._parse_jobs_equipamento(saida)[0]["job_state"])
+
+    def test_job_sem_contagem_fica_com_folhas_none(self) -> None:
+        saida = "        job-id (integer) = 887\n        job-state (enum) = pending-held\n"
+        job = worker._parse_jobs_equipamento(saida)[0]
+        self.assertIsNone(job["folhas"])
+        self.assertEqual(job["job_state"], 4)
+
+
+class FolhasDoEquipamentoTests(unittest.TestCase):
+    """`folhas_do_equipamento`: a contagem que sustenta a fila de cabo."""
+
+    NOSSO = "print-worker-ab12cd.pdf"
+
+    def _com_jobs(self, jobs):
+        original = worker.jobs_do_equipamento
+        worker.jobs_do_equipamento = lambda cfg, fila: jobs
+        self.addCleanup(lambda: setattr(worker, "jobs_do_equipamento", original))
+
+    @staticmethod
+    def _job(job_id, nome, folhas):
+        return {"job_id": job_id, "nome": nome, "folhas": folhas, "job_state": 9}
+
+    def test_soma_so_o_nosso_job(self) -> None:
+        self._com_jobs([self._job(890, self.NOSSO, 3)])
+        self.assertEqual(
+            worker.folhas_do_equipamento(None, "Titans_USB", 889, self.NOSSO), 3
+        )
+
+    def test_job_de_terceiro_nao_entra_na_conta(self) -> None:
+        """AirPrint de celular caindo entre o marco e a leitura."""
+        self._com_jobs(
+            [
+                self._job(890, "Cartaz_Impressao.png", 8),
+                self._job(891, self.NOSSO, 2),
+            ]
+        )
+        self.assertEqual(
+            worker.folhas_do_equipamento(None, "Titans_USB", 889, self.NOSSO), 2
+        )
+
+    def test_job_anterior_ao_marco_nao_entra(self) -> None:
+        """Reimpressão do mesmo pedido: o nome repete, o marco é que separa."""
+        self._com_jobs([self._job(880, self.NOSSO, 5), self._job(890, self.NOSSO, 2)])
+        self.assertEqual(
+            worker.folhas_do_equipamento(None, "Titans_USB", 889, self.NOSSO), 2
+        )
+
+    def test_lixo_binario_e_acusado(self) -> None:
+        """O equipamento contando mais folhas que o pedido é a assinatura."""
+        self._com_jobs([self._job(890, self.NOSSO, 11)])
+        self.assertEqual(
+            worker.folhas_do_equipamento(None, "Titans_USB", 889, self.NOSSO), 11
+        )
+
+    def test_nenhum_job_nosso_vira_none_e_nao_zero(self) -> None:
+        """Zero condenaria um pedido correto; ignorância tem de dizer None."""
+        self._com_jobs([self._job(890, "Cartaz_Impressao.png", 8)])
+        self.assertIsNone(
+            worker.folhas_do_equipamento(None, "Titans_USB", 889, self.NOSSO)
+        )
+
+    def test_job_nosso_sem_contagem_vira_none(self) -> None:
+        """Somar só a parte legível daria um número baixo demais."""
+        self._com_jobs(
+            [self._job(890, self.NOSSO, 2), self._job(891, self.NOSSO, None)]
+        )
+        self.assertIsNone(
+            worker.folhas_do_equipamento(None, "Titans_USB", 889, self.NOSSO)
+        )
+
+    def test_lista_ilegivel_vira_none(self) -> None:
+        self._com_jobs(None)
+        self.assertIsNone(
+            worker.folhas_do_equipamento(None, "Titans_USB", 889, self.NOSSO)
+        )
+
+    def test_sem_marco_nao_ha_o_que_comparar(self) -> None:
+        """Marco None (fila socket, ou leitura falhou): não se inventa contagem."""
+        self._com_jobs([self._job(890, self.NOSSO, 3)])
+        self.assertIsNone(
+            worker.folhas_do_equipamento(None, "Titans_USB", None, self.NOSSO)
+        )
+
+
+class MarcoJobsDoEquipamentoTests(unittest.TestCase):
+    """`marco_jobs_do_equipamento`: o marco zero da contagem por IPP."""
+
+    def _com_jobs(self, jobs):
+        original = worker.jobs_do_equipamento
+        worker.jobs_do_equipamento = lambda cfg, fila: jobs
+        self.addCleanup(lambda: setattr(worker, "jobs_do_equipamento", original))
+
+    def test_maior_id_da_lista(self) -> None:
+        self._com_jobs(
+            [
+                {"job_id": 880, "nome": "a", "folhas": 1, "job_state": 9},
+                {"job_id": 887, "nome": "b", "folhas": 0, "job_state": 4},
+            ]
+        )
+        self.assertEqual(worker.marco_jobs_do_equipamento(None, "Titans_USB"), 887)
+
+    def test_lista_vazia_e_leitura_boa_e_vale_zero(self) -> None:
+        """Impressora sem job nenhum: qualquer job novo terá id maior que 0."""
+        self._com_jobs([])
+        self.assertEqual(worker.marco_jobs_do_equipamento(None, "Titans_USB"), 0)
+
+    def test_lista_ilegivel_vira_none(self) -> None:
+        """None e 0 são coisas diferentes: um é ignorância, o outro é medida."""
+        self._com_jobs(None)
+        self.assertIsNone(worker.marco_jobs_do_equipamento(None, "Titans_USB"))
 
 
 class MensagemErroPedidoTests(unittest.TestCase):

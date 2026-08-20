@@ -462,6 +462,21 @@ ARQUIVO_IPP_JOB = """{
 }
 """
 
+# Pedido IPP para a lista de jobs DO EQUIPAMENTO (ver folhas_do_equipamento).
+# `which-jobs all` inclui os já concluídos: quando perguntamos, o nosso job
+# terminou — se pedíssemos só os ativos, ele já não estaria lá.
+ARQUIVO_IPP_JOBS = """{
+    NAME "Jobs do equipamento"
+    OPERATION Get-Jobs
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR naturalLanguage attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR keyword which-jobs all
+    ATTR keyword requested-attributes job-id,job-name,job-state,job-media-sheets-completed
+}
+"""
+
 _ipp_test_paths: dict[str, str] = {}
 
 
@@ -1574,6 +1589,166 @@ def desfecho_do_job(cfg: Config, job_id: str) -> dict | None:
     return desfecho
 
 
+# --- Contagem de folhas pelo próprio equipamento, via IPP -------------------
+#
+# Numa fila IPP o equipamento registra cada job na lista IPP DELE, com
+# `job-media-sheets-completed` contado pelo firmware. É a mesma qualidade de
+# prova que o contador do motor dá por SNMP — com a diferença de andar pelo
+# mesmo caminho por onde o documento foi. Na fila de cabo
+# (`ipp://127.0.0.1:60000/ipp/print`, servida pelo ippusbxd) isso é o que torna
+# a conferência possível sem Wi-Fi: o SNMP ali apontaria para o loopback e
+# ficaria mudo, e todo pedido sairia IMPRESSO sem prova nenhuma.
+#
+# Esta impressora não expõe contador vitalício por IPP (não há
+# `printer-impressions-completed`), então a medição é POR JOB: guardamos o maior
+# job-id antes de submeter e, no fim, somamos as folhas dos jobs novos que sejam
+# nossos.
+#
+# Uma única consulta, depois do job. Numa fila IPP o backend segura o job local
+# até o remoto terminar, então quando `aguardar_conclusao` retorna a impressora
+# já parou — nada é perguntado ao equipamento durante a transmissão e a regra do
+# df1b9f8 continua valendo.
+
+
+def fila_conta_por_ipp(fila: str) -> bool:
+    """A impressora registra os jobs desta fila na lista IPP dela?
+
+    Só quando o device URI é IPP: aí o job entra pelo servidor IPP do
+    equipamento e ganha entrada na lista dele. Numa fila `socket://` o fluxo
+    entra pela porta RAW e a impressora não registra job nenhum — perguntar ali
+    gastaria uma transação para receber uma lista que nunca conteria o nosso.
+    """
+    uri = device_uri_da_fila(fila)
+    if not uri:
+        return False
+    parsed = parse_device_uri(uri)
+    return bool(parsed and parsed[1] and parsed[0] in IPP_SCHEMES)
+
+
+def _parse_jobs_equipamento(saida: str) -> list[dict]:
+    """Jobs da saída `-tv` de um Get-Jobs: um dict por bloco separado.
+
+    O ipptool imprime os jobs em sequência, separados por `-- separator --`, e
+    antes do primeiro vem o eco da requisição. Blocos sem um `job-id` legível
+    são descartados, o que naturalmente descarta esse cabeçalho — a linha
+    `requested-attributes ... = job-id,job-name,...` cita os nomes, mas nenhum
+    deles vem seguido de `(tipo) = valor`.
+
+    Mesma armadilha de regex do `_parse_desfecho_job`: `job-state\\s*\\(` não
+    pode casar com `job-state-reasons`.
+    """
+    jobs: list[dict] = []
+    for bloco in re.split(r"--\s*separator\s*--", saida):
+        m = re.search(r"job-id\s*\([^)]*\)\s*=\s*(\d+)", bloco)
+        if not m:
+            continue
+        job: dict = {
+            "job_id": int(m.group(1)),
+            "nome": None,
+            "folhas": None,
+            "job_state": None,
+        }
+        m = re.search(r"job-name\s*\([^)]*\)\s*=\s*(.*)", bloco)
+        if m:
+            job["nome"] = m.group(1).strip()
+        m = re.search(
+            r"job-media-sheets-completed\s*\([^)]*\)\s*=\s*(-?\d+)", bloco
+        )
+        if m and int(m.group(1)) >= 0:
+            job["folhas"] = int(m.group(1))
+        m = re.search(r"job-state\s*\([^)]*\)\s*=\s*([\w-]+)", bloco)
+        if m:
+            bruto = m.group(1).lower()
+            job["job_state"] = (
+                int(bruto) if bruto.isdigit() else JOB_STATE_POR_NOME.get(bruto)
+            )
+        jobs.append(job)
+    return jobs
+
+
+def jobs_do_equipamento(cfg: Config, fila: str) -> list[dict] | None:
+    """Lista de jobs lida DO EQUIPAMENTO. None = não havia como perguntar.
+
+    Lista vazia é resposta válida ("o equipamento não tem job nenhum") e é
+    diferente de None ("não deu para ler") — a distinção é o que impede um
+    silêncio de virar veredito.
+    """
+    if not fila_conta_por_ipp(fila) or shutil.which("ipptool") is None:
+        return None
+    alvo = _uri_com_host_resolvido(cfg, alvo_ipp_da_fila(fila))
+    try:
+        proc = subprocess.run(
+            ["ipptool", "-tv", alvo, _arquivo_ipp("jobs", ARQUIVO_IPP_JOBS)],
+            capture_output=True,
+            text=True,
+            timeout=max(cfg.reachability_timeout * 2, 5),
+            env=CUPS_ENV,
+        )
+    except Exception as err:  # noqa: BLE001 - timeout/erro => degrada
+        log.debug("ipptool (jobs do equipamento, fila %s) falhou: %s", fila, err)
+        return None
+    if "successful-ok" not in proc.stdout:
+        log.debug("Fila %s: Get-Jobs sem successful-ok — sem contagem por IPP", fila)
+        return None
+    return _parse_jobs_equipamento(proc.stdout)
+
+
+def marco_jobs_do_equipamento(cfg: Config, fila: str) -> int | None:
+    """Maior job-id no equipamento ANTES de submeter; None se não deu para ler.
+
+    Gêmeo do `paginas_do_motor` na contagem por SNMP: é o marco zero. Lido sem
+    job em voo, então respeita a regra do df1b9f8.
+
+    Lista vazia devolve 0 — "nenhum job ainda" é uma leitura BOA, e qualquer job
+    novo terá id maior que zero. É o único lugar deste caminho onde zero
+    significa sucesso em vez de ignorância.
+    """
+    jobs = jobs_do_equipamento(cfg, fila)
+    if jobs is None:
+        return None
+    return max((j["job_id"] for j in jobs), default=0)
+
+
+def folhas_do_equipamento(
+    cfg: Config, fila: str, marco: int | None, nome_job: str
+) -> int | None:
+    """Folhas que o EQUIPAMENTO contou para o nosso job; None sem prova.
+
+    Soma `job-media-sheets-completed` dos jobs com id acima do marco E com o
+    nome que submetemos. O filtro por nome não é zelo: esta impressora aceita
+    job de fora (AirPrint de celular entra direto nela), e um job de terceiro
+    caindo entre o marco e a leitura viraria falso positivo — pedido correto
+    reprovado, papel gasto de novo.
+
+    Nenhum job nosso, ou algum deles sem contagem legível => None, NUNCA 0. O
+    job-id do equipamento reinicia em ciclo de energia, e somar só a parte
+    legível daria um número baixo demais: os dois casos condenariam um pedido
+    que saiu certo.
+    """
+    if marco is None or not nome_job:
+        return None
+    jobs = jobs_do_equipamento(cfg, fila)
+    if not jobs:
+        return None
+    nossos = [j for j in jobs if j["job_id"] > marco and j["nome"] == nome_job]
+    if not nossos:
+        log.debug(
+            "Fila %s: nenhum job acima do marco %s com nome %r — sem contagem por IPP",
+            fila,
+            marco,
+            nome_job,
+        )
+        return None
+    if any(j["folhas"] is None for j in nossos):
+        log.debug(
+            "Fila %s: job %r sem job-media-sheets-completed legível — sem contagem",
+            fila,
+            nome_job,
+        )
+        return None
+    return sum(j["folhas"] for j in nossos)
+
+
 class Veredito(NamedTuple):
     """`problema` descreve a falha (None = sem falha). `verificado` diz se houve
     prova vinda do EQUIPAMENTO — sem ela, "sem problema" significa apenas "não
@@ -1587,7 +1762,7 @@ def conferir_folhas(
     cfg: Config,
     job_id: str,
     folhas_esperadas: int,
-    folhas_motor: int | None = None,
+    folhas_equipamento: int | None = None,
     *,
     sem_papel: bool = False,
 ) -> Veredito:
@@ -1595,10 +1770,15 @@ def conferir_folhas(
 
     Evidências, da mais forte para a mais fraca:
 
-    1. `folhas_motor` — delta do contador de vida do motor (ver
-       `paginas_do_motor`). É folha que realmente passou pelo mecanismo, então
-       vale para qualquer fila, inclusive `socket://`, onde não existe contagem
-       vinda do equipamento por IPP. É a ÚNICA que aprova.
+    1. `folhas_equipamento` — prova vinda da própria impressora, e a ÚNICA
+       que aprova. Tem duas origens, conforme o que a fila permite ler:
+       - delta do contador de vida do motor por SNMP (`paginas_do_motor`):
+         folha que passou pelo mecanismo, vale para qualquer fila, inclusive
+         `socket://`, mas a leitura anda pela rede — na fila de cabo o host é o
+         loopback do ippusbxd e o SNMP fica mudo;
+       - `job-media-sheets-completed` do job na lista IPP DO EQUIPAMENTO
+         (`folhas_do_equipamento`): existe só em fila IPP, e é o que torna a
+         fila de cabo conferível sem depender do Wi-Fi.
     2. o job terminou `canceled`/`aborted` no cupsd.
     3. `job-media-sheets-completed` do cupsd local. Só condena, nunca absolve:
        em fila `socket://` ele é o que o filtro empurrou para dentro do socket,
@@ -1614,24 +1794,24 @@ def conferir_folhas(
     esperado e o pedido segue IMPRESSO — acabar o papel no fim de um job
     completo não é falha do job.
     """
-    if folhas_motor is not None and folhas_motor != folhas_esperadas:
+    if folhas_equipamento is not None and folhas_equipamento != folhas_esperadas:
         if sem_papel:
             return Veredito(
                 f"a impressora ficou sem papel no meio do pedido e não concluiu a "
-                f"tempo — saíram {folhas_motor} de {folhas_esperadas} folha(s)",
+                f"tempo — saíram {folhas_equipamento} de {folhas_esperadas} folha(s)",
                 True,
             )
         return Veredito(
-            f"o motor da impressora gastou {folhas_motor} folha(s) para um pedido "
+            f"a impressora gastou {folhas_equipamento} folha(s) para um pedido "
             f"de {folhas_esperadas}"
             + (
                 " — provável despejo de lixo binário"
-                if folhas_motor > folhas_esperadas
+                if folhas_equipamento > folhas_esperadas
                 else " — impressão incompleta"
             ),
             True,
         )
-    if folhas_motor is not None:
+    if folhas_equipamento is not None:
         return Veredito(None, True)
 
     desfecho = desfecho_do_job(cfg, job_id)
@@ -1832,6 +2012,11 @@ def processar(
             # até o fim do job é o papel que a impressora de fato gastou. Aqui
             # ainda não há job em voo, então a regra do df1b9f8 é respeitada.
             motor_antes = paginas_do_motor(cfg, fila)
+            # Marco gêmeo para filas IPP (é o caso da fila de cabo, onde o SNMP
+            # apontaria para o loopback e não responderia). Em fila `socket://`
+            # não custa transação nenhuma: `jobs_do_equipamento` desiste antes
+            # de falar com o equipamento, porque ali ele não registra job.
+            marco_jobs = marco_jobs_do_equipamento(cfg, fila)
 
             try:
                 job_id = enviar_para_impressora(fila, caminho, cfg.lp_options)
@@ -1862,11 +2047,19 @@ def processar(
                 espera = aguardar_folhas_do_motor(
                     cfg, fila, motor_antes, folhas_esperadas, heartbeat
                 )
+                folhas = espera.folhas
+                if folhas is None:
+                    # SNMP mudo. Numa fila IPP ainda há prova a colher: o
+                    # equipamento registrou o job na lista dele. É por aqui que
+                    # a fila de cabo se confere, sem tocar no Wi-Fi.
+                    folhas = folhas_do_equipamento(
+                        cfg, fila, marco_jobs, os.path.basename(caminho)
+                    )
                 veredito = conferir_folhas(
                     cfg,
                     job_id,
                     folhas_esperadas,
-                    espera.folhas,
+                    folhas,
                     sem_papel=espera.motivo == "sem_papel",
                 )
                 if veredito.problema:
@@ -1884,7 +2077,7 @@ def processar(
                         veredito.problema,
                         fila=fila,
                         job_id=job_id,
-                        folhas_impressas=espera.folhas,
+                        folhas_impressas=folhas,
                     )
                     return
                 mark(sb, pedido_id, "IMPRESSO", {"printed_at": now_iso()})

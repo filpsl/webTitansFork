@@ -333,10 +333,26 @@ A espera é guiada por **progresso**, não por relógio:
 - parada **sem explicação** (job cancelado no painel, atolamento) com a bandeja cheia:
   60 s e o pedido vai a `ERRO` com o número de folhas que de fato saíram.
 
-Sem nenhuma leitura do contador (SNMP mudo, `SNMP_COMMUNITY` vazia, impressora trocada)
-o pedido é marcado `IMPRESSO` e a equipe recebe um aviso de que **aquele pedido ficou sem
-conferência** — reprovar sem prova custaria uma reimpressão inteira de um pedido
-provavelmente correto.
+### Segunda fonte de prova: a lista de jobs do equipamento (filas IPP)
+
+Em fila **IPP** — inclusive a de **cabo** (`ipp://127.0.0.1:60000/ipp/print`, servida pelo
+`ippusbxd` sobre USB) — a impressora registra cada job na lista IPP dela, com
+`job-media-sheets-completed` contado pelo firmware. O worker guarda o maior `job-id` antes
+de submeter e, no fim, soma as folhas dos jobs novos **com o nome que ele submeteu**.
+
+O filtro por nome é obrigatório: a impressora aceita job de fora (AirPrint de celular entra
+direto nela) e um job de terceiro caindo no meio viraria falso positivo.
+
+Essa fonte é o que torna a fila de cabo conferível **sem Wi-Fi**: ali o SNMP apontaria para
+o loopback e ficaria mudo. Em fila `socket://` ela não existe (o fluxo entra pela porta RAW
+e a impressora não registra job nenhum), e o worker nem gasta a transação — quem manda é o
+contador do motor. A consulta acontece uma vez só, **depois** do job, então nada é
+perguntado ao equipamento durante a transmissão.
+
+Sem nenhuma das duas provas (SNMP mudo e fila sem contagem IPP, `SNMP_COMMUNITY` vazia,
+impressora trocada) o pedido é marcado `IMPRESSO` e a equipe recebe um aviso de que
+**aquele pedido ficou sem conferência** — reprovar sem prova custaria uma reimpressão
+inteira de um pedido provavelmente correto.
 
 ## Operação: pedidos em ERRO
 

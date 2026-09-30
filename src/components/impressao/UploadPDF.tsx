@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowDown, ArrowUp, FileText, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import {
+  carregarPDF,
   contarPaginas,
   mesclarPDFs,
   validarSelecao,
@@ -59,16 +60,18 @@ export function UploadPDF({ itens, onItensChange, onPDFPronto }: Props) {
     }));
     onItensChange((atuais) => [...atuais, ...entradas]);
 
-    // Conta um por vez: cada PDF sobe para a memória do navegador durante a
-    // leitura, e em paralelo isso derrubaria celulares mais fracos.
+    // Lê um por vez: cada PDF sobe para a memória do navegador durante a
+    // leitura, e em paralelo isso derrubaria celulares mais fracos. A cópia em
+    // memória substitui o File original na lista — o upload, minutos depois,
+    // não relê o arquivo do aparelho.
     setAnalisando(true);
     try {
       for (const entrada of entradas) {
         try {
-          const paginas = await contarPaginas(entrada.file);
+          const { copia, paginas } = await carregarPDF(entrada.file);
           onItensChange((atuais) =>
             atuais.map((item) =>
-              item.id === entrada.id ? { ...item, paginas } : item
+              item.id === entrada.id ? { ...item, file: copia, paginas } : item
             )
           );
         } catch {
@@ -112,7 +115,8 @@ export function UploadPDF({ itens, onItensChange, onPDFPronto }: Props) {
     if (itens.length === 0 || !todosContados || ocupado) return;
     const files = itens.map((item) => item.file);
 
-    // Arquivo único: envia o original, byte a byte, sem passar pela mesclagem.
+    // Arquivo único: envia a cópia em memória, byte a byte igual ao original,
+    // sem passar pela mesclagem.
     if (files.length === 1) {
       onPDFPronto({ file: files[0], numPaginas: totalPaginas });
       return;

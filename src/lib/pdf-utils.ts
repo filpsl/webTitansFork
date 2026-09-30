@@ -41,6 +41,24 @@ export async function contarPaginas(file: File): Promise<number> {
   return total;
 }
 
+// Lê o PDF uma única vez, logo na seleção, e devolve uma cópia em memória com
+// os MESMOS bytes, junto da contagem de páginas. Daqui em diante o pedido não
+// depende mais do arquivo no aparelho — que o Android pode alterar ou revogar
+// antes do upload (o Chrome aborta o envio e o JS só vê "Failed to fetch").
+// `type` explícito: o storage-js envia File via FormData usando `file.type`
+// (ignora a opção contentType), e o bucket só aceita application/pdf.
+export async function carregarPDF(
+  file: File
+): Promise<{ copia: File; paginas: number }> {
+  const copia = new File([await file.arrayBuffer()], file.name, {
+    type: "application/pdf",
+    lastModified: file.lastModified,
+  });
+  // Conta a partir da cópia (e não de um ArrayBuffer compartilhado): o pdfjs
+  // pode transferir o buffer para o worker e deixá-lo vazio deste lado.
+  return { copia, paginas: await contarPaginas(copia) };
+}
+
 // Um arquivo da lista do pedido. `paginas` é null enquanto o pdfjs ainda está
 // contando; o avanço para a configuração exige todos contados.
 export type ArquivoSelecionado = {
@@ -138,8 +156,9 @@ export function nomeDoArquivoDoPedido(files: File[]): string {
 }
 
 // Concatena os PDFs na ordem recebida, no próprio navegador, devolvendo um
-// único File. Chamada apenas com 2+ arquivos: o pedido de arquivo único envia o
-// original byte a byte, sem passar por reescrita (decisão D2 do design).
+// único File. Chamada apenas com 2+ arquivos: o pedido de arquivo único envia a
+// cópia em memória feita na seleção — byte a byte igual ao original, sem passar
+// por reescrita.
 export async function mesclarPDFs(files: File[]): Promise<File> {
   if (files.length === 1) return files[0];
 

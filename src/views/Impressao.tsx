@@ -35,7 +35,8 @@ const Impressao = () => {
   const [passo, setPasso] = useState<Passo>("UPLOAD");
   // A lista de arquivos escolhidos vive aqui (e não dentro do UploadPDF) para
   // sobreviver ao ir e voltar entre UPLOAD e CONFIG; `file` é o PDF final do
-  // pedido — o original quando há um arquivo só, o mesclado quando há vários.
+  // pedido — a cópia em memória quando há um arquivo só, o mesclado quando há
+  // vários. Nunca o File do seletor, que ainda aponta para o aparelho.
   const [arquivos, setArquivos] = useState<ArquivoSelecionado[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [numPaginas, setNumPaginas] = useState<number>(0);

@@ -16,6 +16,7 @@ import { TelaSucesso } from "@/components/impressao/TelaSucesso";
 import { BotaoOndeRetirar } from "@/components/impressao/BotaoOndeRetirar";
 import { StatusImpressora } from "@/components/impressao/StatusImpressora";
 import { supabase } from "@/lib/supabase";
+import { enviarPDF } from "@/lib/envio-pdf";
 import type { ArquivoSelecionado } from "@/lib/pdf-utils";
 import type { ModoCor } from "@/lib/types";
 
@@ -57,10 +58,7 @@ const Impressao = () => {
       const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, "_");
       const pdfPath = `${tempId}/${safeName}`;
 
-      const { error: uploadError } = await supabase.storage
-        .from("pdfs-impressao")
-        .upload(pdfPath, file, { contentType: "application/pdf", upsert: false });
-      if (uploadError) throw uploadError;
+      await enviarPDF(pdfPath, file);
 
       // valor_centavos NÃO é enviado: o servidor (create-pix) é a autoridade
       // de preço, calculando a partir da contagem real de páginas do PDF.

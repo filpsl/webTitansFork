@@ -16,7 +16,7 @@ import { TelaSucesso } from "@/components/impressao/TelaSucesso";
 import { BotaoOndeRetirar } from "@/components/impressao/BotaoOndeRetirar";
 import { StatusImpressora } from "@/components/impressao/StatusImpressora";
 import { supabase } from "@/lib/supabase";
-import { enviarPDF } from "@/lib/envio-pdf";
+import { enviarPDF, ErroCheckout, MSG_CONEXAO } from "@/lib/envio-pdf";
 import type { ArquivoSelecionado } from "@/lib/pdf-utils";
 import type { ModoCor } from "@/lib/types";
 
@@ -73,18 +73,31 @@ const Impressao = () => {
         })
         .select("id")
         .single();
-      if (insertError) throw insertError;
+      if (insertError) {
+        throw new ErroCheckout(
+          "Não foi possível registrar o pedido. Tente novamente.",
+          "PEDIDO",
+          insertError
+        );
+      }
 
       setPedidoId(pedido.id);
 
-      const resp = await fetch("/api/payments/create-pix", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pedidoId: pedido.id }),
-      });
+      // Sem nova tentativa aqui: o create-pix está no caminho do pagamento.
+      let resp: Response;
+      try {
+        resp = await fetch("/api/payments/create-pix", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pedidoId: pedido.id }),
+        });
+      } catch (err) {
+        throw new ErroCheckout(MSG_CONEXAO, "PIX-REDE", err);
+      }
       if (!resp.ok) {
+        // As mensagens de erro do create-pix já vêm em português.
         const body = await resp.json().catch(() => ({}));
-        throw new Error(body.error ?? "Falha ao gerar PIX");
+        throw new ErroCheckout(body.error ?? "Falha ao gerar PIX", `PIX-${resp.status}`);
       }
       const dados = (await resp.json()) as DadosPagamento;
       // Exibe o valor e a contagem autoritativos vindos do servidor.
@@ -94,7 +107,11 @@ const Impressao = () => {
       setPasso("PAGAMENTO");
     } catch (err) {
       console.error(err);
-      toast.error(err instanceof Error ? err.message : "Erro inesperado.");
+      if (err instanceof ErroCheckout) {
+        toast.error(err.message, { description: `Código: ${err.codigo}` });
+      } else {
+        toast.error("Erro inesperado. Tente novamente.");
+      }
     } finally {
       setEnviando(false);
     }

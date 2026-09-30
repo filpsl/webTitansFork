@@ -99,12 +99,27 @@ export default {
 						/* Two identical strips: move exactly one strip width */
 						transform: 'translateX(-33.3333%)'
 					}
+				},
+				'walk': {
+					'0%, 100%': {
+						transform: 'translateY(0) rotate(-3deg)'
+					},
+					'25%': {
+						transform: 'translateY(-6px) rotate(0deg)'
+					},
+					'50%': {
+						transform: 'translateY(0) rotate(3deg)'
+					},
+					'75%': {
+						transform: 'translateY(-6px) rotate(0deg)'
+					}
 				}
 			},
 			animation: {
 				'accordion-down': 'accordion-down 0.2s ease-out',
 				'accordion-up': 'accordion-up 0.2s ease-out',
-				'scroll-left': 'scroll-left 24s linear infinite'
+				'scroll-left': 'scroll-left 24s linear infinite',
+				'walk': 'walk 1.1s ease-in-out infinite'
 			}
 		}
 	},

@@ -20,12 +20,15 @@ type ProjectHeroCarouselProps = {
   images: readonly ProjectHeroImage[];
   ariaLabel?: string;
   className?: string;
+  /** Fundo de cada slide — default bg-muted/30 (usado nas páginas de projeto). */
+  itemClassName?: string;
 };
 
 const ProjectHeroCarousel = ({
   images,
   ariaLabel = "Imagens do projeto",
   className,
+  itemClassName,
 }: ProjectHeroCarouselProps) => {
   const [api, setApi] = useState<CarouselApi>();
   const [current, setCurrent] = useState(0);
@@ -56,7 +59,12 @@ const ProjectHeroCarousel = ({
         <CarouselContent className="ml-0">
           {images.map((image) => (
             <CarouselItem key={image.alt} className="pl-0">
-              <div className="flex min-h-[200px] max-h-[400px] items-center justify-center overflow-hidden rounded-xl border border-border/50 bg-muted/30">
+              <div
+                className={cn(
+                  "flex min-h-[200px] max-h-[400px] items-center justify-center overflow-hidden rounded-xl border border-border/50",
+                  itemClassName ?? "bg-muted/30",
+                )}
+              >
                 <img
                   src={image.src}
                   alt={image.alt}

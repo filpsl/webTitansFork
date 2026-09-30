@@ -1,0 +1,424 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  MESTRE
+  CAPITAO
+  VICE_CAPITAO
+  GERENTE_PROJETO
+  INSTRUTOR
+  MEMBRO_PROJETO
+  MEMBRO_TEMPORARIO
+
+  @@map("role")
+}
+
+enum PresencaStatus {
+  PRESENTE
+  AUSENTE
+  FALTA_JUSTIFICADA
+
+  @@map("presenca_status")
+}
+
+enum EventoStatus {
+  CONFIRMADO
+  PENDENTE
+  ALTERADO
+  CANCELADO
+  CONCLUIDO
+
+  @@map("evento_status")
+}
+
+enum AvisoSeveridade {
+  INFO
+  ALERTA
+  CRITICO
+
+  @@map("aviso_severidade")
+}
+
+enum StatusMembro {
+  ATIVO
+  INATIVO
+  CONSELHEIRO
+
+  @@map("status_membro")
+}
+
+// Nível da "cartinha" do membro no Hall da Fama — mesma hierarquia de raridade
+// das cartas já usadas na página do Seguidor de Linha (ICONE = variant "icon",
+// LENDA = "purple", MESTRE = "gold", ESMERALDA = "emerald", PLATINA = "teal",
+// PRATA = "silver"). Nulo = o membro não entra no Hall da Fama.
+enum NivelCarta {
+  ICONE
+  LENDA
+  MESTRE
+  ESMERALDA
+  PLATINA
+  PRATA
+
+  @@map("nivel_carta")
+}
+
+enum LogCategoria {
+  AUTENTICACAO
+  TAREFAS
+
+  @@map("log_categoria")
+}
+
+model User {
+  id                 String       @id @default(uuid()) @db.Uuid
+  email              String       @unique
+  password           String
+  twoFactorSecret    String?      @map("two_factor_secret")
+  twoFactorActivated Boolean      @default(false) @map("two_factor_activated")
+  role               Role         @default(MEMBRO_PROJETO)
+  status             StatusMembro @default(ATIVO)
+  nivelCarta         NivelCarta?  @map("nivel_carta")
+  nome               String?
+  dataNascimento     DateTime?    @map("data_nascimento") @db.Date
+  curso              String?
+  semestre           Int?
+  // Quando o membro abriu o link de "defina sua senha" do convite mais
+  // recente pela primeira vez. Zerado sempre que um novo convite é (re)enviado
+  // (ver enviarConviteDeSenha) — reflete sempre o convite vigente, não um
+  // antigo. Null = ainda não abriu (ou não há convite pendente).
+  conviteAbertoEm    DateTime?    @map("convite_aberto_em")
+  createdAt          DateTime     @default(now()) @map("created_at")
+
+  projetos Projeto[]
+  accounts Account[]
+  sessions Session[]
+
+  eventosCriados     Evento[]      @relation("EventoCriadoPor")
+  eventosAtualizados Evento[]      @relation("EventoAtualizadoPor")
+  eventoSeries       EventoSerie[] @relation("EventoSerieCriadoPor")
+  avisosCriados      Aviso[]       @relation("AvisoCriadoPor")
+  avisosAtualizados  Aviso[]       @relation("AvisoAtualizadoPor")
+
+  sessoesPresencaCriadas SessaoPresenca[] @relation("SessaoPresencaCriadoPor")
+  presencasComoMembro    Presenca[]       @relation("PresencaMembro")
+  presencasRegistradas   Presenca[]       @relation("PresencaRegistradoPor")
+
+  logs LogAtividade[]
+
+  @@map("users")
+}
+
+model Projeto {
+  id        String   @id @default(uuid()) @db.Uuid
+  nome      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  membros         User[]
+  colunas         Coluna[]
+  eventos         Evento[]         @relation("EventoProjetos")
+  sessoesPresenca SessaoPresenca[]
+
+  @@map("projetos")
+}
+
+// Coluna de um quadro Kanban. Limite de 15 por projeto é validado na API
+// (não dá pra expressar "no máximo N linhas por grupo" via constraint do Postgres).
+model Coluna {
+  id        String   @id @default(uuid()) @db.Uuid
+  nome      String
+  ordem     Int
+  projetoId String   @map("projeto_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  projeto Projeto  @relation(fields: [projetoId], references: [id], onDelete: Cascade)
+  tarefas Tarefa[]
+
+  @@unique([projetoId, ordem])
+  @@map("colunas")
+}
+
+model Tarefa {
+  id          String    @id @default(uuid()) @db.Uuid
+  titulo      String
+  descricao   String    @default("")
+  prioridade  Int       @default(1)
+  dataEntrega DateTime? @map("data_entrega") @db.Date
+  colunaId    String    @map("coluna_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  coluna     Coluna      @relation(fields: [colunaId], references: [id], onDelete: Cascade)
+  subtarefas Subtarefa[]
+
+  @@map("tarefas")
+}
+
+model Subtarefa {
+  id        String  @id @default(uuid()) @db.Uuid
+  descricao String
+  concluida Boolean @default(false)
+  tarefaId  String  @map("tarefa_id") @db.Uuid
+
+  tarefa Tarefa @relation(fields: [tarefaId], references: [id], onDelete: Cascade)
+
+  @@map("subtarefas")
+}
+
+// Uma "coluna" da planilha de presença: uma data marcada num projeto.
+model SessaoPresenca {
+  id          String   @id @default(uuid()) @db.Uuid
+  projetoId   String   @map("projeto_id") @db.Uuid
+  data        DateTime @db.Date
+  criadoPorId String   @map("criado_por_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  projeto   Projeto    @relation(fields: [projetoId], references: [id], onDelete: Cascade)
+  criadoPor User       @relation("SessaoPresencaCriadoPor", fields: [criadoPorId], references: [id])
+  presencas Presenca[]
+
+  @@unique([projetoId, data])
+  @@map("sessoes_presenca")
+}
+
+// Uma célula da planilha: status de um membro numa sessão (data) específica.
+model Presenca {
+  id              String         @id @default(uuid()) @db.Uuid
+  sessaoId        String         @map("sessao_id") @db.Uuid
+  membroId        String         @map("membro_id") @db.Uuid
+  status          PresencaStatus
+  observacao      String?
+  registradoPorId String         @map("registrado_por_id") @db.Uuid
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  sessao        SessaoPresenca @relation(fields: [sessaoId], references: [id], onDelete: Cascade)
+  membro        User           @relation("PresencaMembro", fields: [membroId], references: [id], onDelete: Cascade)
+  registradoPor User           @relation("PresencaRegistradoPor", fields: [registradoPorId], references: [id])
+
+  @@unique([sessaoId, membroId])
+  @@map("presencas")
+}
+
+model Semestre {
+  id          String    @id @default(uuid()) @db.Uuid
+  nome        String    @unique
+  inicio      DateTime  @db.Date
+  fim         DateTime  @db.Date
+  ativo       Boolean   @default(false)
+  arquivadoEm DateTime? @map("arquivado_em")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  eventos Evento[]
+  series  EventoSerie[]
+  avisos  Aviso[]
+
+  @@map("semestres")
+}
+
+// Referência estática (8 linhas fixas, inseridas via SQL na própria migration).
+model TipoEvento {
+  slug     String  @id
+  label    String
+  corToken String  @map("cor_token")
+  iconeKey String  @map("icone_key")
+  ordem    Int     @default(0)
+  ativo    Boolean @default(true)
+
+  eventos Evento[]
+
+  @@map("tipos_evento")
+}
+
+model EventoSerie {
+  id             String   @id @default(uuid()) @db.Uuid
+  semestreId     String   @map("semestre_id") @db.Uuid
+  frequencia     String // "semanal" | "quinzenal"
+  repetirAte     DateTime @map("repetir_ate") @db.Date
+  tituloSnapshot String   @map("titulo_snapshot")
+  criadoPorId    String   @map("criado_por_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  semestre  Semestre @relation(fields: [semestreId], references: [id], onDelete: Cascade)
+  criadoPor User     @relation("EventoSerieCriadoPor", fields: [criadoPorId], references: [id])
+  eventos   Evento[]
+
+  @@map("eventos_serie")
+}
+
+model Evento {
+  id                  String       @id @default(uuid()) @db.Uuid
+  semestreId          String       @map("semestre_id") @db.Uuid
+  serieId             String?      @map("serie_id") @db.Uuid
+  ocorrenciaIndex     Int?         @map("ocorrencia_index")
+  titulo              String
+  inicio              DateTime
+  fim                 DateTime?
+  diaTodo             Boolean      @default(false) @map("dia_todo")
+  tipoSlug            String       @map("tipo_slug")
+  status              EventoStatus @default(CONFIRMADO)
+  local               String?
+  linkReuniao         String?      @map("link_reuniao")
+  responsavel         String?
+  descricao           String?
+  notaAlteracao       String?      @map("nota_alteracao")
+  alteracaoVisivelAte DateTime?    @map("alteracao_visivel_ate")
+  importante          Boolean      @default(false)
+  criadoPorId         String       @map("criado_por_id") @db.Uuid
+  atualizadoPorId     String       @map("atualizado_por_id") @db.Uuid
+  createdAt           DateTime     @default(now()) @map("created_at")
+  updatedAt           DateTime     @updatedAt @map("updated_at")
+
+  semestre      Semestre     @relation(fields: [semestreId], references: [id], onDelete: Cascade)
+  serie         EventoSerie? @relation(fields: [serieId], references: [id], onDelete: SetNull)
+  tipo          TipoEvento   @relation(fields: [tipoSlug], references: [slug])
+  criadoPor     User         @relation("EventoCriadoPor", fields: [criadoPorId], references: [id])
+  atualizadoPor User         @relation("EventoAtualizadoPor", fields: [atualizadoPorId], references: [id])
+  projetos      Projeto[]    @relation("EventoProjetos")
+  avisos        Aviso[]
+
+  @@map("eventos")
+}
+
+model Aviso {
+  id              String          @id @default(uuid()) @db.Uuid
+  semestreId      String          @map("semestre_id") @db.Uuid
+  titulo          String
+  corpo           String
+  severidade      AvisoSeveridade @default(INFO)
+  inicio          DateTime        @default(now())
+  fim             DateTime?
+  eventoId        String?         @map("evento_id") @db.Uuid
+  publicado       Boolean         @default(false)
+  criadoPorId     String          @map("criado_por_id") @db.Uuid
+  atualizadoPorId String          @map("atualizado_por_id") @db.Uuid
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+
+  semestre      Semestre @relation(fields: [semestreId], references: [id], onDelete: Cascade)
+  evento        Evento?  @relation(fields: [eventoId], references: [id], onDelete: SetNull)
+  criadoPor     User     @relation("AvisoCriadoPor", fields: [criadoPorId], references: [id])
+  atualizadoPor User     @relation("AvisoAtualizadoPor", fields: [atualizadoPorId], references: [id])
+
+  @@map("avisos")
+}
+
+// Quadro de logs (só o MESTRE acessa): tentativas de login, conexões e
+// alterações no quadro de tarefas — pra investigar erros de acesso. Guarda
+// nome/e-mail "congelados" no momento do evento (não só a FK) porque a
+// tentativa de login com e-mail errado não tem User pra referenciar, e um
+// log não pode virar lixo órfão se o membro for removido depois.
+model LogAtividade {
+  id           String       @id @default(uuid()) @db.Uuid
+  criadoEm     DateTime     @default(now()) @map("criado_em")
+  usuarioId    String?      @map("usuario_id") @db.Uuid
+  usuarioNome  String?      @map("usuario_nome")
+  usuarioEmail String?      @map("usuario_email")
+  categoria    LogCategoria
+  acao         String
+  descricao    String
+  ip           String?
+  userAgent    String?      @map("user_agent")
+
+  usuario User? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([criadoEm])
+  @@index([categoria])
+  @@map("logs_atividade")
+}
+
+enum TipoPedido3D {
+  ARQUIVOS
+  MODELAGEM
+
+  @@map("tipo_pedido_3d")
+}
+
+enum StatusPedido3D {
+  RECEBIDO
+  CONTATADO
+  CONCLUIDO
+  CANCELADO
+
+  @@map("status_pedido_3d")
+}
+
+// Leads do serviço de impressão 3D (/servicos/impressao-3d): os dois
+// formulários da página (ARQUIVOS e MODELAGEM) gravam aqui via
+// app/api/servicos/impressao-3d. Os arquivos (.stl/.step + fotos) ficam no
+// bucket `arquivos-3d` do Storage deste mesmo projeto Supabase — só os
+// caminhos são gravados aqui. RLS, o CHECK de completude por tipo e a policy
+// do bucket são adicionados à mão na migration (fora do que o Prisma consegue
+// expressar no schema — mesmo padrão do seed de tipos_evento).
+model PedidoImpressao3D {
+  id           String         @id @default(uuid()) @db.Uuid
+  createdAt    DateTime       @default(now()) @map("created_at")
+  tipo         TipoPedido3D
+  nome         String
+  email        String
+  telefone     String
+  origem       String
+  qualidade    String? // Só ARQUIVOS: texto livre (ex.: "padrão", "1,75 mm").
+  descricao    String? // Só MODELAGEM.
+  observacoes  String? // Só ARQUIVOS, opcional.
+  modelosPaths String[]       @default([]) @map("modelos_paths")
+  fotosPaths   String[]       @default([]) @map("fotos_paths")
+  status       StatusPedido3D @default(RECEBIDO)
+  contatadoEm  DateTime?      @map("contatado_em")
+
+  @@index([status])
+  @@index([tipo])
+  @@map("pedidos_3d")
+}
+
+// Tabelas exigidas pelo Auth.js (NextAuth v5) para sessão em banco via PrismaAdapter.
+// https://authjs.dev/getting-started/adapters/prisma
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id") @db.Uuid
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id") @db.Uuid
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
